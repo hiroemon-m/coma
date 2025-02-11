@@ -52,8 +52,10 @@ class PPO:
         self.new_actor = Actor(T,e,r,w,rik,self.agent_num,temperature)
         self.update_actor = Actor(T,e,r,w,rik,self.agent_num,temperature)
         #adamにモデルを登録
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr) 
-        self.new_actor_optimizer = torch.optim.Adam(self.new_actor.parameters(), lr=lr)
+        #self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr) 
+        #self.new_actor_optimizer = torch.optim.Adam(self.new_actor.parameters(), lr=lr)
+        self.actor_optimizer = torch.optim.SGD(self.actor.parameters(), lr=lr) 
+        self.new_actor_optimizer = torch.optim.SGD(self.new_actor.parameters(), lr=lr)
 
     def sparse_clip_grad_norm_(self,parameters, max_norm):
         for param in parameters:
@@ -92,7 +94,7 @@ class PPO:
 
 
 
-        for _ in range(1):
+        for _ in range(3):
             loss = 0
             for i in range(storycount):
                 old_policy = prob_sparse_memory[i].detach().clone() 
@@ -154,20 +156,24 @@ class PPO:
             parameters = list(self.new_actor.parameters())
 
             # カスタム勾配クリッピングを適用
-            self.sparse_clip_grad_norm_(parameters, max_norm=1.0)
+            self.sparse_clip_grad_norm_(parameters, max_norm=5)
 
                 
             #except RuntimeError as e:
              #   print("エラー:", e)
 
             # 勾配をチェック
+            self.new_actor_optimizer.step()
             for name, param in self.new_actor.named_parameters():
                 if param.grad is not None:
                     print(f"Gradient for {name}:", param.grad,param.grad_fn,param.is_leaf)
+                    #print(f"  Moment (m): {self.new_actor_optimizer.state[param]['exp_avg']}")
+                    #print(f"  Moment (v): {self.new_actor_optimizer.state[param]['exp_avg_sq']}")
                 else:
                     print(f"No gradient for {name}",param.grad,param.grad_fn,param.is_leaf)
 
-            self.new_actor_optimizer.step()
+
+            print("param",self.new_actor.T,self.new_actor.e,self.new_actor.r,self.new_actor.W)
 
 
         return self.new_actor.T.clone().detach(), self.new_actor.e.clone().detach(), \
@@ -288,29 +294,6 @@ def show():
 def execute_data(persona_num,data_name,data_type):
     ##デバッグ用
     torch.autograd.set_detect_anomaly(True)
-    #alpha, betaの読み込み
-    if data_name == "NIPS":
-        action_dim = 32
-
-    if data_name == "DBLP":
-        action_dim = 500
-
-    if data_name == "Twitter":
-        action_dim = 112044
-
-    if data_name == "Reddit":
-        action_dim = 8077
-    
-
-    if data_name == "NIPS":
-        feat_size = 2411
-    if data_name == "DBLP":
-        feat_size = 3854
-    if data_name == "Twitter":
-        feat_size = 5372
-    if data_name == "Reddit":
-        feat_size = 300
-
     LEARNED_TIME = 4
     GENERATE_TIME = 5
     TOTAL_TIME = 10
@@ -325,7 +308,12 @@ def execute_data(persona_num,data_name,data_type):
     
 
     agent_num = len(load_data.adj[LEARNED_TIME])
+    action_dim = agent_num
     input_size = len(load_data.feature[LEARNED_TIME][1])
+    feat_size = agent_num
+    
+
+ 
 
     path_n = "optimize/{}/{}/".format(data_type,data_name)
     path = path_n+"persona={}/gamma.npy".format(int(persona_num))
@@ -372,7 +360,8 @@ def execute_data(persona_num,data_name,data_type):
     
     elif data_name == "DBLP":
         mu = 0.0229
-        lr = 0.000952
+        #lr = 0.000952
+        lr = 0.001
         temperature = 0.01
         T = torch.tensor([1.481 for _ in range(persona_num)], dtype=torch.float32)
         e = torch.tensor([0.759 for _ in range(persona_num)], dtype=torch.float32)
@@ -380,13 +369,13 @@ def execute_data(persona_num,data_name,data_type):
         w = torch.tensor([0.846 for _ in range(persona_num)], dtype=torch.float32)
   
     else:
-        mu = 0.01
-        lr = 0.01
+        mu = 0.13608351100239896
+        lr = 0.0011929646522007911
         temperature = 0.01
-        T = torch.tensor([1.50 for _ in range(persona_num)], dtype=torch.float32)
-        e = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
-        r = torch.tensor([0.80 for _ in range(persona_num)], dtype=torch.float32)
-        w = torch.tensor([0.80 for _ in range(persona_num)], dtype=torch.float32)
+        T = torch.tensor([0.640388379140707 for _ in range(persona_num)], dtype=torch.float32)
+        e = torch.tensor([0.8855348869859818 for _ in range(persona_num)], dtype=torch.float32)
+        r = torch.tensor([0.9910613791988085 for _ in range(persona_num)], dtype=torch.float32)
+        w = torch.tensor([0.31904789752318846 for _ in range(persona_num)], dtype=torch.float32)
 
     ln = 0
     ln_sub = 0
@@ -400,12 +389,12 @@ def execute_data(persona_num,data_name,data_type):
         print("----------episode:{}----------".format(episode))
 
     
-        print("pe",persona_ration[:10])
+       
 
         # E-step
         #mixture_ratio:混合比率
 
-        if episode == 0:
+        if episode <= 10:
             mixture_ratio = persona_ration
 
        
@@ -415,7 +404,7 @@ def execute_data(persona_num,data_name,data_type):
      
                       
             # スムージングファクター
-            if episode <= 3:
+            if episode <= 20:
                 clip_ration = 0.2
                 updated_prob_tensor = (1 - clip_ration) * mixture_ratio + clip_ration * torch.from_numpy(new_mixture_ratio.astype("float32"))
                 mixture_ratio = updated_prob_tensor.float()
@@ -427,9 +416,9 @@ def execute_data(persona_num,data_name,data_type):
                 mixture_ratio = mixture_ratio.expand(5,ratio_size[0],ratio_size[1])
  
         
-            alpha = means[:,0]
-            beta = means[:,1]
-            gamma = means[:,2]
+        alpha = means[:,0]
+        beta = means[:,1]
+        gamma = means[:,2]
             
 
 
@@ -511,12 +500,12 @@ def execute_data(persona_num,data_name,data_type):
    
     
      
-        if episode % 10 == 0:
+        if episode % 5 == 0:
             #print(reward)
             print(episodes_reward)
             print(f"episode: {episode}, average reward: {sum(episodes_reward[-10:]) / 10}")
 
-        if episode >=10:
+        if episode >=20:
             flag = False
 
         else:
@@ -559,8 +548,12 @@ def execute_data(persona_num,data_name,data_type):
     ratio_size = mixture_ratio.size()
     mixture_ratio = mixture_ratio.expand(5,ratio_size[0],ratio_size[1])
     agents = PPO(obs,agent_num, input_size, action_dim,lr, gamma,T,e,r,w,mixture_ratio,temperature,story_count,data_name)
+    path_save = "experiment_data"
+    np.save(path_save+"/train_persona_ration",np.concatenate([mixture_ratio.detach().numpy()],axis=0))
+    np.save(path_save+"/train_paramerter",np.concatenate([T.detach().numpy(),e.detach().numpy(),r.detach().numpy(),w.detach().numpy()],axis=0))
 
 
+        
     for count in range(10):
 
         obs.reset(
@@ -579,7 +572,7 @@ def execute_data(persona_num,data_name,data_type):
             #属性値の評価 
             pred_prob = torch.ravel(feat_prob.to_dense()).to("cpu")
             pred_prob = pred_prob.to("cpu").detach().numpy()
-            print(type(load_data.feature[GENERATE_TIME + test_time]))
+     
 
             if isinstance(load_data.feature[GENERATE_TIME + test_time],csc_matrix):
                 dense_array = np.array(load_data.feature[GENERATE_TIME + test_time].todense())
@@ -638,8 +631,8 @@ def execute_data(persona_num,data_name,data_type):
             #予測データ
             target_prob= edge_prob.to_dense()
             #print("pi",pi_test)     
-            target_prob = target_prob.view(-1)
-            target_prob = target_prob.to("cpu").detach().numpy()
+            target_prob = torch.ravel(target_prob)
+            target_prob = target_prob.detach().numpy()
             edge_predict_probs = np.concatenate([target_prob], 0)
             
             #テストデータ
@@ -658,9 +651,6 @@ def execute_data(persona_num,data_name,data_type):
             edge_test = np.concatenate([pos_edge], 0)
 
             print("エッジの総数")
-            #print("pred feat sum",edge_predict_probs.reshape((500, -1)).sum(axis=1))
-            #print("target edge sum",edge_test.reshape((500, -1)).sum(axis=1))
-            print("pred edge sum",edge_predict_probs.sum())
             print("acction edge sum",edge_action.sum())
             print("target edge sum",edge_test.sum())
 
@@ -688,10 +678,7 @@ def execute_data(persona_num,data_name,data_type):
             np.save(path_save+"/proposed_attr_nll", attr_calc_nll_log)
             #print("t",T,"e",e,"r",r,"w",w)
             #print(mixture_ratio)
-            np.save(path_save+"/persona_ration",np.concatenate([mixture_ratio.detach().numpy()],axis=0))
-            np.save(path_save+"/paramerter",np.concatenate([T.detach().numpy(),e.detach().numpy(),r.detach().numpy(),w.detach().numpy()],axis=0))
 
-        
 
 
 

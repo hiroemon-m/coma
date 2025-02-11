@@ -55,6 +55,7 @@ scipy = "^1.8.1"
 torchviz = "^0.0.2"
 tqdm = "^4.64.1"
 torch-geometric = "^2.4.0"
+optuna = "^4.2.0"
 
 [tool.poetry.dev-dependencies]
 autopep8 = "^1.6.0"

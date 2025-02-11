@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
+from torchviz import make_dot
 
 # First Party Library
 import config
@@ -13,6 +14,13 @@ from init_real_data import init_real_data
 import gc
 
 device = config.select_device
+
+def search_diagonal(data):
+    """スパーステンソルの対角成分を削除."""
+    filtered_indices = data.coalesce().indices()
+    mask = filtered_indices[0] == filtered_indices[1]
+    
+    print(len(mask))
 
 def norm_func(x):
     x = x.coalesce()
@@ -125,7 +133,7 @@ class Optimizer:
         self.feats = feats
         self.model = model
         self.size = size
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.05)
 
         return
 
@@ -134,11 +142,14 @@ class Optimizer:
 
 
 
-    def optimize_sparse(self, t: int):
+    def optimize_sparse(self,model, t: int):
 
         next_feature = self.feats[t] 
     
         next_action = self.edges[t]
+        print("*"*100)
+        print("対角要素の数")
+        search_diagonal(next_action)
         
 
         #simlalityを計算
@@ -169,8 +180,17 @@ class Optimizer:
         
        
         loss = - reward.sum()
+        #dot = make_dot(loss,params=dict(list(model.named_parameters())))
+
+        # グラフを表示
+        #dot.render("graph", format="png", cleanup=True)
         self.optimizer.zero_grad()
         loss.backward()
+        print("*"*100)
+        print(self.model.alpha.grad.mean())
+        print(self.model.beta.grad.mean())
+        if t > 0:
+            print(self.model.gamma.grad.mean())
         self.optimizer.step()
 
        
@@ -223,7 +243,7 @@ if __name__ == "__main__":
        #     optimizer.optimize(t)
         #else:
         #    optimizer.optimize_sparse(t)
-        optimizer.optimize_sparse(t)
+        optimizer.optimize_sparse(model,t)
 
 
         optimizer.export_param(data_type,data_name)

@@ -168,7 +168,9 @@ class Env(nn.Module):
             diff_feature = torch.sub(old_feature,new_feature).coalesce() #属性値の差を求める
             impact_coo = adj_sim_self(next_action,diff_feature)
             impact_norm = impact_coo/(self.feature[0].size()[0])
+      
             persona_gamma = torch.mm(self.persona[time],self.gamma.view(persona_num,1)) #gammaを計算
+
             reward_impact = impact_norm.multiply(persona_gamma).coalesce()
 
 
@@ -220,51 +222,32 @@ class Env(nn.Module):
         new_feature = next_feature.detach().clone()
         edge = self.edges.detach().clone()
         diff_feature = torch.sub(old_feature, new_feature)
-        debug_grad("diff_feature", diff_feature)
+
         impact_coo = adj_sim_self(one_hop_action, diff_feature).coalesce()
         impact_norm = impact_coo/(self.feature[0].size()[0])
 
         #node x 属性値数 → node x 1にして、alpha,betaのnxnにたす
         #nnzの行番号を求める
         #row_indices = impact_norm.indices()[0]
-        #row_values = impact_norm.values()
-
+        #row_values = impact_norm.values()s
         #tow_indicesの値を使って,行方向に足し合わせる(node x 1)
-        
         #row_sum = torch.zeros(impact_norm.size()[0]).scatter_add(0, row_indices, row_values)
         #impact_norm_sum = torch.sparse_coo_tensor(impact_norm.indices(),row_sum,impact_norm.size())
-  
-
         reward_impact = impact_norm.multiply(gamma_all).coalesce()
-        debug_grad("reward_impact", reward_impact)
-
         # similarity計算の勾配追跡
-        similality_coo = adj_sim(one_hop_action, next_feature)
-        debug_grad("similality_coo", similality_coo)
-        
+        similality_coo = adj_sim(one_hop_action, next_feature) 
         reward_sim = similality_coo.multiply(alpha_all).coalesce()
-        debug_grad("reward_sim", reward_sim)
-
         # cost計算の勾配追跡
         reward_cost = edge.multiply(beta_all).to_sparse().coalesce()
-        debug_grad("reward_cost", reward_cost)
-        
         reward = reward_sim - reward_cost + reward_impact
-        debug_grad("reward", reward)
-
         reward_loss = torch.sparse.sum(reward)
 
-        debug_grad("reward_loss", reward_loss)
 
         optimizer.zero_grad()
         reward_loss.backward()
         optimizer.step()
     
-        # 勾配をチェック
-        for param_group in optimizer.param_groups:
-            for param in param_group['params']:
-                print(f"パラメータ: {param[:10]}")
-                print(f"勾配: {param.grad.coalesce().values()[:10]}")
+       
 
         return alpha_all,beta_all,gamma_all
 

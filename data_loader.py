@@ -187,8 +187,8 @@ class attr_graph_dynamic_spmat_NIPS:
 
 
 class attr_graph_dynamic_spmat_twitter:
-    def __init__(self, dirIn="./data/", dataset="twitter", T=1):
-        n_nodes_fortime = 10000
+    def __init__(self, dirIn="./data/", dataset="twitter", T=10):
+        n_nodes_fortime = 15000
         dirIn = dirIn + dataset
         self.T = T
         self.len = 0
@@ -216,12 +216,20 @@ class attr_graph_dynamic_spmat_twitter:
                 dirIn + "/A" + str(t) + ".mat", struct_as_record=True
             )["A"]
 
-            G_matrix = G_matrix[survive,:][:,survive]
-            
-            A_matrix = A_matrix[survive]
+            #G_matrix = G_matrix[survive,:][:,survive]
+            print(G_matrix.shape)   
+            print(A_matrix.shape)   
+            #G_matrix = G_matrix[survive][:,survive]
+            #A_matrix = A_matrix[survive]
+            G_matrix = G_matrix[survive]
+            G_matrix = G_matrix[:,survive][:n_nodes_fortime,:n_nodes_fortime]
+            A_matrix = A_matrix[survive][:n_nodes_fortime,:]
+
+            print(G_matrix.shape)
+            print(A_matrix.shape)   
             
             self.Amat_list.append(spmat2sptensor(A_matrix))
-            G_matrix[G_matrix > 0] = 1.0
+            G_matrix[G_matrix > 0] = 1
 
             self.Gmat_list.append(spmat2sptensor(G_matrix))
   
