@@ -267,7 +267,7 @@ def overwrite_exit(exit_prob, common_prob):
 
 class Actor(nn.Module):
 
-    def __init__(self, T, e, r, w, persona, agent_num, temperature):
+    def __init__(self, T, e, r, w, x,persona, agent_num, temperature):
         super().__init__()
         size = (len(persona[0][0]),1)
         indices = torch.tensor([[0, 0, 0, 0, 0],[0, 1, 2, 3, 4]])  # 2次元に拡張
@@ -275,6 +275,7 @@ class Actor(nn.Module):
         self.e = nn.Parameter(e.clone().detach(),requires_grad=True)  # 密テンソル
         self.r = nn.Parameter(r.clone().detach(),requires_grad=True)  # 密テンソル
         self.W = nn.Parameter(w.clone().detach(),requires_grad=True)  # 密テンソル
+        self.x = nn.Parameter(x.clone().detach(),requires_grad=True)  # 密テンソル
         self.temperature = temperature
         self.persona = persona
         self.agent_num = agent_num
@@ -299,10 +300,10 @@ class Actor(nn.Module):
 
     
 
-    def _disconect_prob(self, edges, attributes, weight, temp):
+    def _disconect_prob(self, edges, attributes, x):
         """類似度と確率の計算."""
         
-        exp_input = (edges / temp) * weight
+        exp_input = edges * x
 
 
         #exp_output = torch.exp(torch.where(exp_input.values()>70,torch.tensor(70),exp_input.values()))
@@ -420,7 +421,7 @@ class Actor(nn.Module):
                 one_hop_similality.indices(), dissim_values, one_hop_similality.size()
             )
        
-            delete_edge = self._disconect_prob(dissim, feat_sigmoid_action, self.e[i], self.T[i])
+            delete_edge = self._disconect_prob(dissim, feat_sigmoid_action, self.x[i])
 
             delete_edge_prob = torch.tanh(delete_edge.values())
             #print("one_hop_similality",one_hop_similality)
