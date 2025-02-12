@@ -25,7 +25,7 @@ from init_real_data import init_real_data
 import time
 
 #another file
-from actor_review import Actor
+from actor_review_2 import Actor
 
 torch.autograd.set_detect_anomaly(True)
 

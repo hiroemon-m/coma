@@ -5,6 +5,10 @@ import time
 from torchviz import make_dot
 import sys
 
+"""
+total_past使わない
+"""
+
 
 def remove_zeros_from_sparse(sparse_tensor):
     """
@@ -221,17 +225,15 @@ def adj_dis_sim(adj, feat):
 def create_random_node(matrix_size):
 
     num_nonzeros = (matrix_size)
-    random_num = int(num_nonzeros*(num_nonzeros*0.001))
+    random_num = int(num_nonzeros*0.5)
     # ランダムなインデックスを生成
     indices = torch.randint(0, matrix_size, (2, random_num))  # 2行（行と列）のインデックス
 
     # ランダムな値を生成
-    values = torch.ones(random_num)
+    values = torch.randn(random_num)
 
     # スパーステンソルを作成
     sparse_tensor = torch.sparse_coo_tensor(indices, values, size=(matrix_size,matrix_size))
-    print("sparse_tensor",sparse_tensor)
-
 
     return remove_zeros_from_sparse(sparse_tensor)
 
@@ -358,11 +360,8 @@ class Actor(nn.Module):
  
 
         for i in range(len(self.persona[0][0])):
-            if times == 0:
-                attributes = total_past
-            else:
-    
-                attributes = (total_past*(times+4) +attributes.coalesce().clone().detach())/(times+5)
+      
+            attributes = attributes.coalesce().clone().detach()
             edges = edges.coalesce().clone().detach()
 
             two_hop_neighbar = two_hop_neighbar.coalesce().clone().detach()
