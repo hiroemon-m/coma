@@ -36,7 +36,7 @@ device = config.select_device
 
 
 class PPO:
-    def __init__(self, obs,agent_num,input_size, action_dim, lr, gamma,T,e,r,w,x,rik,temperature,story_count,data_set):
+    def __init__(self, obs,agent_num,input_size, action_dim, lr, gamma,T,e,r,w,x,s,rik,temperature,story_count,data_set):
         self.agent_num = agent_num
         self.action_dim = action_dim
         self.input_size = input_size
@@ -48,9 +48,9 @@ class PPO:
         self.beta = self.obs.beta
         self.gamma = self.obs.gamma
         self.count = 0
-        self.actor = Actor(T,e,r,w,x,rik,self.agent_num,temperature)
-        self.new_actor = Actor(T,e,r,w,x,rik,self.agent_num,temperature)
-        self.update_actor = Actor(T,e,r,w,x,rik,self.agent_num,temperature)
+        self.actor = Actor(T,e,r,w,x,s,rik,self.agent_num,temperature)
+        self.new_actor = Actor(T,e,r,w,x,s,rik,self.agent_num,temperature)
+        self.update_actor = Actor(T,e,r,w,x,s,rik,self.agent_num,temperature)
         #adamにモデルを登録
         #self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr) 
         #self.new_actor_optimizer = torch.optim.Adam(self.new_actor.parameters(), lr=lr)
@@ -173,19 +173,19 @@ class PPO:
                     print(f"No gradient for {name}",param.grad,param.grad_fn,param.is_leaf)
 
 
-            print("param",self.new_actor.T,self.new_actor.e,self.new_actor.r,self.new_actor.W)
+            print("param",self.new_actor.T,self.new_actor.e,self.new_actor.r,self.new_actor.W,self.new_actor.x,self.new_actor.s)
 
 
         return self.new_actor.T.clone().detach(), self.new_actor.e.clone().detach(), \
-            self.new_actor.r.clone().detach(), self.new_actor.W.clone().detach(),self.new_actor.x.clone().detach()
+            self.new_actor.r.clone().detach(), self.new_actor.W.clone().detach(),self.new_actor.x.clone().detach(),self.new_actor.s.clone().detach()
     
-    def update_reward(self,obs,T,e,r,w,x,mixture_ration,temperature,action_dim,feat_size,edge,feat, scaler):
+    def update_reward(self,obs,T,e,r,w,x,s,mixture_ration,temperature,action_dim,feat_size,edge,feat, scaler):
 
         _, _ = obs.reset(edge, feat,mixture_ration)
         
         for time in range(5):
 
-            self.update_actor = Actor(T,e,r,w,x,mixture_ration,self.agent_num,temperature)
+            self.update_actor = Actor(T,e,r,w,x,s,mixture_ration,self.agent_num,temperature)
             edge,two_hop_neighbar,feature = obs.state()
             edge_probs,edge_action,feat_action = self.update_actor.get_action(feature,edge,two_hop_neighbar,time,action_dim,feat_size)
             if time == 0:
@@ -378,6 +378,7 @@ def execute_data(persona_num,data_name,data_type):
         r = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
         w = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
         x = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
+        s = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
         
 
     ln = 0
@@ -440,7 +441,7 @@ def execute_data(persona_num,data_name,data_type):
 
 
         
-        agents = PPO(obs,agent_num, input_size, action_dim,lr, mu,T,e,r,w,x,mixture_ratio,temperature,story_count,data_name)
+        agents = PPO(obs,agent_num, input_size, action_dim,lr, mu,T,e,r,w,x,s,mixture_ratio,temperature,story_count,data_name)
         episode_reward = 0
         prob_sparse_memory = []
         edge_sparse_memory = []
@@ -487,10 +488,10 @@ def execute_data(persona_num,data_name,data_type):
 
         episodes_reward.append(episode_reward)
 
-        T,e,r,w,x= agents.train(mu,action_dim,feat_size,prob_sparse_memory,edge_sparse_memory,feat_sparse_memory,reward_memory)
+        T,e,r,w,x,s= agents.train(mu,action_dim,feat_size,prob_sparse_memory,edge_sparse_memory,feat_sparse_memory,reward_memory)
         print("Updated Policy")
 
-        alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler)
+        alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,s,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler)
 
         print("Updated Reward")
         
@@ -550,7 +551,7 @@ def execute_data(persona_num,data_name,data_type):
     mixture_ratio = torch.from_numpy(new_mixture_ratio.astype("float32"))
     ratio_size = mixture_ratio.size()
     mixture_ratio = mixture_ratio.expand(5,ratio_size[0],ratio_size[1])
-    agents = PPO(obs,agent_num, input_size, action_dim,lr, gamma,T,e,r,w,x,mixture_ratio,temperature,story_count,data_name)
+    agents = PPO(obs,agent_num, input_size, action_dim,lr, gamma,T,e,r,w,x,s,mixture_ratio,temperature,story_count,data_name)
     path_save = "experiment_data"
     np.save(path_save+"/train_persona_ration",np.concatenate([mixture_ratio.detach().numpy()],axis=0))
     np.save(path_save+"/train_paramerter",np.concatenate([T.detach().numpy(),e.detach().numpy(),r.detach().numpy(),w.detach().numpy()],axis=0))

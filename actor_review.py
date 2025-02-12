@@ -221,7 +221,7 @@ def adj_dis_sim(adj, feat):
 def create_random_node(matrix_size):
 
     num_nonzeros = (matrix_size)
-    random_num = int(num_nonzeros*0.9)
+    random_num = int(num_nonzeros*0.5)
     # ランダムなインデックスを生成
     indices = torch.randint(0, matrix_size, (2, random_num))  # 2行（行と列）のインデックス
 
@@ -267,7 +267,7 @@ def overwrite_exit(exit_prob, common_prob):
 
 class Actor(nn.Module):
 
-    def __init__(self, T, e, r, w, x,persona, agent_num, temperature):
+    def __init__(self, T, e, r, w, x,s,persona, agent_num, temperature):
         super().__init__()
         size = (len(persona[0][0]),1)
         indices = torch.tensor([[0, 0, 0, 0, 0],[0, 1, 2, 3, 4]])  # 2次元に拡張
@@ -276,6 +276,7 @@ class Actor(nn.Module):
         self.r = nn.Parameter(r.clone().detach(),requires_grad=True)  # 密テンソル
         self.W = nn.Parameter(w.clone().detach(),requires_grad=True)  # 密テンソル
         self.x = nn.Parameter(x.clone().detach(),requires_grad=True)  # 密テンソル
+        self.s = nn.Parameter(s.clone().detach(),requires_grad=True)  # 密テンソル
         self.temperature = temperature
         self.persona = persona
         self.agent_num = agent_num
@@ -351,13 +352,42 @@ class Actor(nn.Module):
         return create_edge
 
     def forward(self, attributes, edges, two_hop_neighbar, times, agent_num, sparse_size):
-
+        attributes = attributes.coalesce().clone().detach()
         #2hopの未接続ノードとのエッジ確率の計算
+        trend_sum = torch.sparse.sum(attributes,dim=0)
+        trend_sum_values = trend_sum.values()
+        column_sum_indices = trend_sum.indices()
+        # `num_rows` 分繰り返す
+        row_indices = torch.arange(attributes.size(0)).repeat_interleave(column_sum_indices.size(1))
+        col_indices = column_sum_indices.expand(attributes.size(0),-1).flatten()
+
+
+
+        # 繰り返した新しい indices を作成
+        expanded_indices = torch.stack([row_indices, col_indices], dim=0)
+        min_value = torch.min(trend_sum_values)
+        max_value = torch.max(trend_sum_values)
+        normalized_values = (trend_sum_values - min_value) / (max_value - min_value)
+        normalized_values = torch.where(normalized_values>0.6,torch.tensor(1),torch.tensor(0))
+        print("normalized_values",torch.sum(normalized_values))
+        normalized_values = normalized_values.repeat(attributes.size(0))
+        normalized_trend = torch.sparse_coo_tensor(expanded_indices, normalized_values, attributes.size()).coalesce()
+        remove_trend = remove_zeros_from_sparse(normalized_trend)
+        print("remove_trend",remove_trend._nnz())
+        print("remove_trend",remove_trend)
+
 
         for i in range(len(self.persona[0][0])):
             edges = edges.coalesce().clone().detach()
             attributes = attributes.coalesce().clone().detach()
             two_hop_neighbar = two_hop_neighbar.coalesce().clone().detach()
+            
+            #trend項の計算
+            
+
+         
+            
+
             # 属性値更新 - sparse.mmの結果に対して直接演算を行う
         
             neigh_feat_base = torch.sparse.mm(edges, attributes)
@@ -381,7 +411,9 @@ class Actor(nn.Module):
 
 
             # 属性値の更新を結合 - 明示的な加算
-            next_feat = scaled_attributes + scaled_neigh_feat
+            next_feat = scaled_attributes + scaled_neigh_feat + self.s[i]*remove_trend
+            print("next_feat",(scaled_attributes + scaled_neigh_feat)._nnz())
+            print("next_feat",next_feat._nnz())
 
                 # スパーステンソルの加算
             #next_feat = self._combine_sparse_tensors(scaled_attributes, scaled_neigh_feat)
