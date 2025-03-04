@@ -373,10 +373,10 @@ def execute_data(persona_num,data_name,data_type):
         #lr = 0.0011929646522007911
         lr = 0.005
         temperature = 0.01
-        T = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
-        e = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
+        T = torch.tensor([1.5 for _ in range(persona_num)], dtype=torch.float32)
+        e = torch.tensor([0.4 for _ in range(persona_num)], dtype=torch.float32)
         r = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
-        w = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
+        w = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
         x = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
         s = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
         

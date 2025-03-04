@@ -8,7 +8,7 @@ edge_nll = []
 
 
 
-p = "/Users/hiro_m/Desktop/study/coma/experiment_data"
+p = "experiment_data/action_space/variable/space=10%"
 attr_auc_path = p+"/proposed_attr_auc.npy"
 attr_nll_path = p+"/proposed_attr_nll.npy"
 edge_auc_path = p+"/proposed_edge_auc.npy"

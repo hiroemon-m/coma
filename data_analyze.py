@@ -6,6 +6,13 @@ LEARNED_TIME = 4
 GENERATE_TIME = 5
 TOTAL_TIME = 10
 load_data = init_real_data("Twitter")
+def remove_diagonal(data):
+    """スパーステンソルの対角成分を削除."""
+    filtered_indices = data.indices()
+    mask = filtered_indices[0] == filtered_indices[1]
+    new_indices = filtered_indices[:, mask]
+    new_values = data.values()[mask]
+    return torch.sparse_coo_tensor(new_indices, new_values, data.size()).coalesce()
 
 def remove_zeros_from_sparse(sparse_tensor):
     """
@@ -38,6 +45,9 @@ for time in range(TOTAL_TIME):
 
     edge = load_data.adj[time].to_dense()
     attr = load_data.feature[time].to_dense()
+    s_edge = remove_diagonal(load_data.adj[time].coalesce())
+
+
 
     print("-----------------{}----------------".format(time))
     print("属性値の総数")
@@ -67,11 +77,10 @@ for time in range(TOTAL_TIME):
         print(torch.sum(sa))
         old = 0
         for k in range(time):
-            print(k)
+      
             old = old + load_data.feature[time].to_dense()
-        print("過去興味を持ったものと同じか？",torch.sum((old>0)&(attr>0)))
-
-  
+        print("過去興味を持ったものと同じか？",torch.sum((old>0)&(attr>0),dim=1))
+      
         print("一つ前の時刻から０属性値")
         print(torch.sum(torch.where((torch.where(attr_before>0.0,1.0,0.0)-torch.where(attr>0.0,1.0,0.0))>0.0,1.0,0.0)))
         print("一つ前の時刻の隣接ノード同じ属性値")
@@ -122,7 +131,7 @@ for time in range(TOTAL_TIME):
         print("{}流行の属性値".format(time),torch.sum(ta))
         #trend = torch.sum(attr_before,dim=0).repeat(500,1)
         
-        print("ysoku",torch.sum((attr_before+adj+trend)>0.5,1,0))
+        print("ysoku",torch.sum(torch.where((attr_before+adj+trend)>0.5,1,0)))
         print("総数",torch.sum(attr))
         #for k in range(10):
         #    print("{}流行の属性値".format(k),torch.sum((attr>0)&(trend>(k**2))))
@@ -135,8 +144,6 @@ for time in range(TOTAL_TIME):
 
 
 
-        print(torch.sum((adj>0)&(sim_attr>0),dim=1))
-        print(torch.sum((un_adj>0)&(sim_attr>0),dim=1))
 
         
         #print(sim[0])#高くても0.1程度 → 閾値で分ける

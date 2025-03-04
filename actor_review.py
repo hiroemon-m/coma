@@ -221,7 +221,7 @@ def adj_dis_sim(adj, feat):
 def create_random_node(matrix_size):
 
     num_nonzeros = (matrix_size)
-    random_num = int(num_nonzeros*(num_nonzeros*0.001))
+    random_num = int(num_nonzeros*(num_nonzeros*0.5))
     # ランダムなインデックスを生成
     indices = torch.randint(0, matrix_size, (2, random_num))  # 2行（行と列）のインデックス
 
@@ -349,25 +349,36 @@ class Actor(nn.Module):
        
         # 新しいスパース隣接行列 C を作成
         create_edge = torch.sparse_coo_tensor(updated_indices, updated_values, size).coalesce()
-        print("create_edge",create_edge._nnz())
-
+        create_edge = self._remove_diagonal(create_edge)
         return create_edge
+
+    def _remove_diagonal(self,n_hop):
+        """2hop先の隣接行列の対角成分を取り除く"""
+        filtered_indices = n_hop.indices()
+        filtered_values = n_hop.values()
+        mask = filtered_indices[0] != filtered_indices[1]  # 行番号と列番号が異なる要素だけを選択
+        # マスクを使って新しいインデックスと値をフィルタリング
+        new_indices = filtered_indices[:, mask]
+        new_values = filtered_values[mask]
+        remove_diagonal_sparse = torch.sparse_coo_tensor(new_indices,new_values,data.size()).coalesce()
+
+        return remove_diagonal_sparse
+
 
     def forward(self, attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size):
      
  
-
+        random_node = create_random_node(sparse_size)
         for i in range(len(self.persona[0][0])):
             if times == 0:
                 attributes = total_past
             else:
-    
                 attributes = (total_past*(times+4) +attributes.coalesce().clone().detach())/(times+5)
+            #attributes = attributes.coalesce().clone().detach()
             edges = edges.coalesce().clone().detach()
 
             two_hop_neighbar = two_hop_neighbar.coalesce().clone().detach()
-            
-            #
+   
 
          
             
@@ -406,16 +417,16 @@ class Actor(nn.Module):
             # 属性値の確率
             feat_sigmoid_prob = sigmoid_func(next_feat)
             #確率的に行動
-            #feat_sigmoid_action_values = Gumbel_Sigmoid(feat_sigmoid_prob, self.temperature, hard=True)
-            #feat_sigmoid_action = torch.sparse_coo_tensor(feat_sigmoid_prob.indices(), feat_sigmoid_action_values, feat_sigmoid_prob.size())
-            #feat_sigmoid_action = remove_zeros_from_sparse(feat_sigmoid_action)
+            feat_sigmoid_action_values = Gumbel_Sigmoid(feat_sigmoid_prob, self.temperature, hard=True)
+            feat_sigmoid_action = torch.sparse_coo_tensor(feat_sigmoid_prob.indices(), feat_sigmoid_action_values, feat_sigmoid_prob.size())
+            feat_sigmoid_action = remove_zeros_from_sparse(feat_sigmoid_action)
             #決定的に行動
-            feat_sigmoid_action = next_feat
+            #feat_sigmoid_action = next_feat
      
             # 2-hop以内の未接続ノードとのエッジ確率
             two_hop_edges = two_hop_neighbar.detach().clone()
             two_hop_disconnect_edges = self._create_two_hop_discconect(two_hop_edges,edges.coalesce())
-            random_node = create_random_node(sparse_size)
+            
             connect_edges_action_space = (two_hop_disconnect_edges + random_node).coalesce()
             #connect_edges_action_space = (two_hop_disconnect_edges).coalesce()
 
@@ -425,6 +436,20 @@ class Actor(nn.Module):
             #print("random_node",random_node._nnz())
             #print("connect_edges_action_space",connect_edges_action_space._nnz())
             connect_edge = self._process_similarity(connect_edges_action_space, feat_sigmoid_action, self.e[i], self.T[i])
+
+            # Min-Max スケーリング
+            # 1. Min-Max スケーリングのために値を取得
+            edge_values = connect_edge.values()
+
+            # 2. 最小値と最大値を取得
+            min_value = torch.min(edge_values)
+            max_value = torch.max(edge_values)
+
+            # 3. Min-Max スケーリング
+            scaled_values = (edge_values - min_value) / (max_value - min_value + 1e-8)  # ゼロ除算防止
+
+            # 4. スケール後のスパーステンソルを再構築
+            scaled_connect_edge = torch.sparse_coo_tensor(connect_edge.indices(), scaled_values, connect_edge.size()).coalesce()
             create_edge_prob = tanh_func(connect_edge)
 
             # エッジ削除確率
@@ -439,7 +464,13 @@ class Actor(nn.Module):
             )
        
             delete_edge = self._disconect_prob(dissim, feat_sigmoid_action, self.x[i])
-
+            
+            # Min-Max スケーリング
+            delete_edge_values = delete_edge.values()   
+            min_values = torch.min(delete_edge_values)
+            max_values = torch.max(delete_edge_values)
+            delete_scaled_values = (delete_edge_values - min_values) / ((max_values - min_values) + 1e-8)
+            delete_edge = torch.sparse_coo_tensor(delete_edge.indices(), delete_scaled_values, delete_edge.size()).coalesce()
             delete_edge_prob = torch.tanh(delete_edge.values())
             #print("one_hop_similality",one_hop_similality)
             #print("delete_edge_prob",delete_edge_prob)
@@ -480,10 +511,9 @@ class Actor(nn.Module):
     def train(self, attributes, edges, total_past, times, agent_num, sparse_size):
 
         #2hop以内の隣接行列
-        edge = torch.sparse.mm(edges,edges)
+        two_hop_neighbar = torch.sparse.mm(edges,edges).coalesce()
 
-        #2hop先の隣接行列の対角成分を取り除く
-        two_hop_neighbar = remove_diagonal(edge)
+     
 
 
         edges_prob, attr_prob,feat_sigmoid_prob,next_feat,scaled_attributes,scaled_neigh_feat = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
@@ -507,7 +537,7 @@ class Actor(nn.Module):
             attr_action = torch.sparse_coo_tensor(filtered_indices, filtered_values, attr_prob.size())
 
             # エッジアクション
-            edge_value = (edges_prob.values() >= 0.4).float()
+            edge_value = (edges_prob.values() >= 0.5).float()
             non_zero_indices = edge_value.nonzero(as_tuple=True)[0]
             filtered_indices = edges_prob.indices()[:, non_zero_indices]
             filtered_values = edge_value[non_zero_indices]

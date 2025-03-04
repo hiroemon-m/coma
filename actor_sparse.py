@@ -1,3 +1,8 @@
+"""
+一旦sparseにしたmの、不備あり
+"""
+
+
 import torch
 import torch.nn as nn
 import gc

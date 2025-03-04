@@ -258,6 +258,6 @@ class Env(nn.Module):
     def state(self):
 
         one_hop_neighbar = self.edges#1hop
-        two_hop_neighbar = remove_diagonal(torch.sparse.mm(self.edges,self.edges))#2hop
+        two_hop_neighbar = torch.sparse.mm(self.edges,self.edges).coalesce()#2hop
 
         return one_hop_neighbar, two_hop_neighbar, self.feature
