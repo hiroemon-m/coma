@@ -4,6 +4,7 @@ import gc
 import time
 from torchviz import make_dot
 import sys
+import torch.nn.functional as F
 
 """
 total_past使わない
@@ -67,7 +68,7 @@ def Gumbel_Sigmoid(probabilities, tau=1.0, hard=False):
 
 def tanh_func(data,data_name="DBLP"):
     """スパーステンソルのtanh計算."""
-    tanhx = torch.tanh(data.values())
+    tanhx = torch.tanh(0.5*data.values()+1)
     tanhx_indices = tanhx.nonzero(as_tuple=True)[0]
     filtered_indices = data.indices()[:, tanhx_indices]
     filtered_values = tanhx[tanhx_indices]
@@ -234,7 +235,7 @@ def create_random_node(matrix_size):
 
     # スパーステンソルを作成
     sparse_tensor = torch.sparse_coo_tensor(indices, values, size=(matrix_size,matrix_size))
-    print("sparse_tensor",sparse_tensor)
+   #xxxxe print("sparse_tensor",sparse_tensor)
 
 
     return remove_zeros_from_sparse(sparse_tensor)
@@ -269,6 +270,11 @@ def overwrite_exit(exit_prob, common_prob):
         indices_exit, updated_values, exit_prob.size()
     ).coalesce()
 
+def custom_activation(x, slope=1.0, max_value=10.0):
+    """カスタム活性化関数: 線形から漸近的に飽和する"""
+    # 小さな値では線形に近い挙動
+    # 大きな値ではmax_valueに漸近
+    return max_value * torch.tanh(x * slope / max_value)
 
 class Actor(nn.Module):
 
@@ -291,17 +297,21 @@ class Actor(nn.Module):
 
 
     def _process_similarity(self, edges, attributes, weight, temp):
-        """類似度と確率の計算."""
+        """カスタム活性化関数を使用した類似度計算."""
         
         adj_sim_matrix = adj_sim(edges, attributes)
-        exp_input = adj_sim_matrix / temp
-
-        exp_output = torch.exp(torch.where(exp_input.values()>70,torch.tensor(70),exp_input.values()))
-
+        raw_values = adj_sim_matrix.values() / temp
+        
+        # カスタム活性化関数を適用
+        activated_values = custom_activation(raw_values, slope=1.0, max_value=5.0)
+        
+        # weightを適用
+        weighted_values = activated_values * weight
+        
         return torch.sparse_coo_tensor(
-            exp_input.indices(),
-            exp_output * weight,
-            exp_input.size()
+            adj_sim_matrix.indices(),
+            weighted_values,
+            adj_sim_matrix.size()
         ).coalesce()
 
     
@@ -432,7 +442,7 @@ class Actor(nn.Module):
             #print("two_hop_disconnect_edges",two_hop_disconnect_edges._nnz())
             #print("random_node",random_node._nnz())
             #print("connect_edges_action_space",connect_edges_action_space._nnz())
-            connect_edge = self._process_similarity(connect_edges_action_space, feat_sigmoid_action, self.e[i], self.T[i])
+            connect_edge = self._process_similarity(connect_edges_action_space, feat_sigmoid_action, self.e[i],self.T[i])
             create_edge_prob = tanh_func(connect_edge)
 
             # エッジ削除確率
@@ -455,6 +465,8 @@ class Actor(nn.Module):
  
             #加算
             exit_edge_prob = (create_edge_prob + delete_edge_exit_prob).coalesce()
+
+ 
             print("edge",edges._nnz())
             print("two_hop_neighbar",two_hop_neighbar._nnz())
             print("create_edge_prob",create_edge_prob._nnz())
@@ -507,6 +519,10 @@ class Actor(nn.Module):
 
             # 属性アクション
             attr_prob_values = attr_prob.values()
+            attr_prob_values = torch.where(attr_prob_values<0,torch.tensor(0.0),attr_prob_values)
+            attr_prob_values = torch.where(attr_prob_values>1.0,torch.tensor(1.0),attr_prob_values)
+            print("NaN",torch.isnan(attr_prob_values).sum())
+            print("attr_prob_values",attr_prob_values)
             attr_value = torch.bernoulli(torch.sigmoid(attr_prob_values))
             non_zero_indices = attr_value.nonzero(as_tuple=True)[0]
             filtered_indices = attr_prob.indices()[:, non_zero_indices]

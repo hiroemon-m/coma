@@ -357,6 +357,8 @@ def execute_data(persona_num,data_name,data_type):
         e = torch.tensor([1.347 for _ in range(persona_num)], dtype=torch.float32)
         r = torch.tensor([0.697 for _ in range(persona_num)], dtype=torch.float32)
         w = torch.tensor([0.026 for _ in range(persona_num)], dtype=torch.float32)
+        x = torch.tensor([0.026 for _ in range(persona_num)], dtype=torch.float32)
+        s = torch.tensor([0.026 for _ in range(persona_num)], dtype=torch.float32)
     
     elif data_name == "DBLP":
         mu = 0.0229
@@ -425,7 +427,7 @@ def execute_data(persona_num,data_name,data_type):
         gamma = means[:,2]
             
 
-
+        print("mixture_ratio",mixture_ratio)
         #personaはじめは均等
         
                     #環境の設定
@@ -438,6 +440,7 @@ def execute_data(persona_num,data_name,data_type):
             gamma=gamma,
             persona=mixture_ratio
         )
+        
 
 
         
@@ -501,11 +504,12 @@ def execute_data(persona_num,data_name,data_type):
       
 
         episodes_reward.append(episode_reward)
+        print()
 
         T,e,r,w,x,s= agents.train(mu,action_dim,feat_size,prob_sparse_memory,edge_sparse_memory,feat_sparse_memory,reward_memory,total_past)
         print("Updated Policy")
-
-        alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,s,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler,total_past)
+        if episode >= 10:
+            alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,s,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler,total_past)
 
         print("Updated Reward")
         
@@ -523,7 +527,7 @@ def execute_data(persona_num,data_name,data_type):
             print(episodes_reward)
             print(f"episode: {episode}, average reward: {sum(episodes_reward[-10:]) / 10}")
 
-        if episode >=30:
+        if episode >=15:
             flag = False
 
         else:
@@ -707,6 +711,6 @@ if __name__ == "__main__":
     #[4,8,12,16]
     s = time.time()
     for i in [5]:
-        execute_data(i,"Twitter","complete")
+        execute_data(i,"NIPS","complete")
     e = time.time()
     print("time:",s-e)

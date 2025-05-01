@@ -208,7 +208,7 @@ def adj_sim(adj, feat):
     feat_sparse = feat.coalesce()
     normalized_feat = calcu_l2(feat)
     similarity = torch.sparse.mm(normalized_feat, normalized_feat.t()).coalesce()
-
+    print("similarity",torch.sum(torch.where(similarity.values()>0,1,0)))
     neigh_similarity = sparse_hadamard_product(adj_sparse, similarity).coalesce()
 
     del similarity,normalized_feat,adj_sparse,feat_sparse,feat,adj
@@ -300,13 +300,14 @@ class Actor(nn.Module):
         """類似度と確率の計算."""
         
         adj_sim_matrix = adj_sim(edges, attributes)
-        exp_input = adj_sim_matrix / temp
+        exp_input = adj_sim_matrix / (temp+1e-10)
 
-        exp_output = torch.exp(torch.where(exp_input.values()>70,torch.tensor(70),exp_input.values()))
-
+        exp_output = torch.exp(torch.where((exp_input.values()*weight)>70,torch.tensor(70),exp_input.values()))
+      
+        print("exp_input",exp_input.values())
         return torch.sparse_coo_tensor(
             exp_input.indices(),
-            exp_output * weight,
+            exp_output ,
             exp_input.size()
         ).coalesce()
 
@@ -475,9 +476,11 @@ class Actor(nn.Module):
             exit_edge_prob = (create_edge_prob + delete_edge_exit_prob).coalesce()
             print("edge",edges._nnz())
             print("two_hop_neighbar",two_hop_neighbar._nnz())
-            print("create_edge_prob",create_edge_prob._nnz())
-            print("delete_edge_exit_prob",delete_edge_exit_prob._nnz())
-            print("exit_edge_prob",exit_edge_prob._nnz())
+            #print("create_edge_prob",create_edge_prob._nnz(),create_edge_prob.values())
+            print("delete_edge_exit_prob",delete_edge_exit_prob._nnz(),delete_edge_exit_prob.coalesce().values())
+            #print("exit_edge_prob",exit_edge_prob._nnz(),exit_edge_prob.coalesce().values())
+            #print("create_edge_prob",create_edge_prob.coalesce().values())
+            #print("exit_edge_prob",exit_edge_prob.values()[:40])
 
             # グラフを表示
             #dot = make_dot(exit_edge_prob,params=dict(list(self.named_parameters())))
@@ -523,8 +526,10 @@ class Actor(nn.Module):
             edges_prob, attr_prob ,_,_,_,_ = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
 
             # 属性アクション
+            print("attr_prob",attr_prob.values())
             attr_prob_values = attr_prob.values()
-            attr_value = torch.bernoulli(torch.sigmoid(attr_prob_values))
+            sigmoid_values = torch.clamp(torch.sigmoid(attr_prob_values), 0.0, 1.0)
+            attr_value = torch.bernoulli(sigmoid_values)
             non_zero_indices = attr_value.nonzero(as_tuple=True)[0]
             filtered_indices = attr_prob.indices()[:, non_zero_indices]
             filtered_values = attr_prob_values[non_zero_indices]

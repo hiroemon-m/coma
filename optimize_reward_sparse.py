@@ -4,6 +4,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 import torch.optim as optim
 import time
 from torchviz import make_dot
@@ -20,25 +21,86 @@ def search_diagonal(data):
     filtered_indices = data.coalesce().indices()
     mask = filtered_indices[0] == filtered_indices[1]
     
-    print(len(mask))
+
+
 
 def norm_func(x):
+    """スパーステンソルのL2ノルムで正規化."""
     x = x.coalesce()
     x_indices = x.indices()
     x_values = x.values()
     x_size = x.size()
     x_row_indices = x_indices[0]            # 行インデックス
     x_squared_values = x_values ** 2                # 各値の平方
-    x_row_sums = torch.zeros(x_size[0])                # 行ごとの平方和を格納
-    x_row_sums.index_add_(0, x_row_indices, x_squared_values)  # 行ごとに値を加算
+    
+    # in-place操作を避けるため、新しいテンソルを作��z
+    x_row_sums = torch.zeros(x_size[0])
+    x_row_sums = x_row_sums.scatter_add(0, x_row_indices, x_squared_values)  # in-place操作を避ける
+    
     x_l2_norms = torch.sqrt(x_row_sums)                # 平方根を取る
-    x_normalized_values = x_values / x_l2_norms[x_row_indices] # 正規化：各非ゼロ要素を行ごとの L2 ノルムで割る
-    normalized_x_feat = torch.sparse_coo_tensor(x_indices, x_normalized_values, x_size) # 正規化されたスパーステンソルを作成
- 
+    x_normalized_values = x_values / x_l2_norms[x_row_indices] # 正規化
+    
+    # スパーステンソルを作成
+    normalized_x_feat = torch.sparse_coo_tensor(
+        x_indices, 
+        x_normalized_values, 
+        x_size
+    ).coalesce()
 
     return normalized_x_feat
 
 
+
+
+
+
+def sparse_hadamard_product(adj, similarity):
+    """
+    スパーステンソルのアダマール積を計算。共通インデックスのみを効率的に扱う。
+    """
+    # スパーステンソルを圧縮
+    adj = adj.coalesce()
+    similarity = similarity.coalesce()
+
+    # 非ゼロ要素のインデックスと値を取得
+    indices_a, values_a = adj.indices(), adj.values()
+    indices_b, values_b = similarity.indices(), similarity.values()
+
+    # (行, 列) を結合してユニークなキーとして扱う
+    indices_a_flat = indices_a[0] * adj.size(1) + indices_a[1]
+    indices_b_flat = indices_b[0] * similarity.size(1) + indices_b[1]
+
+    # 共通インデックスを特定
+    common_mask = torch.isin(indices_a_flat, indices_b_flat)
+
+    # 共通インデックスに対応する値を取得
+    common_indices = indices_a[:, common_mask]
+    common_values_a = values_a[common_mask]
+
+    # `indices_a_flat` と `indices_b_flat` の対応を見つけて、`values_b` を合わせる
+    matched_b_indices = torch.searchsorted(indices_b_flat, indices_a_flat[common_mask])
+    common_values_b = values_b[matched_b_indices]
+
+    # アダマール積（要素ごとの積）を計算
+    common_values = common_values_a * common_values_b
+
+    # スパーステンソルとして返す
+    result = torch.sparse_coo_tensor(common_indices, common_values, adj.size())
+    result = result.coalesce()
+    return result
+
+def adj_sim(adj, feat):
+    """alphaの計算"""
+    adj_sparse = adj.coalesce()
+    feat_sparse = feat.coalesce()
+    #L２ノルムの計算
+    normalized_feat = norm_func(feat)
+    #ノードの類似度の計算
+    similarity = torch.sparse.mm(normalized_feat, normalized_feat.t())
+    neigh_similarity = sparse_hadamard_product(adj_sparse, similarity.to_sparse())
+
+
+    return neigh_similarity
 """隣接行列の類似度計算"""
 def adj_sim(adj, feat):
     # 隣接行列
@@ -133,7 +195,8 @@ class Optimizer:
         self.feats = feats
         self.model = model
         self.size = size
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.05)
+        #self.optimizer = optim.SGD(self.model.parameters(), lr=0.05)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.03)
 
         return
 
@@ -144,37 +207,89 @@ class Optimizer:
 
     def optimize_sparse(self,model, t: int):
 
+
         next_feature = self.feats[t] 
-    
         next_action = self.edges[t]
+
         print("*"*100)
         print("対角要素の数")
+        
         search_diagonal(next_action)
+
         
 
         #simlalityを計算
         normed_next_feature = norm_func(next_feature) #単位ベクトルに変更する
+
         similality_coo = adj_sim(next_action,normed_next_feature)
         reward_sim = torch.sparse.mm(similality_coo,self.model.alpha).to_sparse().coalesce()
+
 
         #costの計算
         reward_costs = torch.sparse.mm(next_action,self.model.beta).to_sparse().coalesce()
 
         #t=0ではimpact計算不可能
         reward = reward_sim - reward_costs
-
+        print("reward",reward)
         #impactの計算
         if t > 0:
+     
 
             #impactを計算:(L2ノルム)^2
             old_feature = self.feats[t-1] 
+            neigboer_feature = torch.sparse.mm(self.edges[t-1],self.feats[t-1])
             new_feature = self.feats[t] 
-            diff_feature = torch.sub(old_feature,new_feature) #属性値の差を求める
-            impact_coo = adj_sim(next_action,diff_feature) 
-            impact_norm = impact_coo/data.feature[0].size()[1]
-            reward_impact = torch.sparse.mm(impact_norm,self.model.gamma).to_sparse().coalesce()
-             
-            reward += reward_impact
+            new_neigboer_feature = torch.sparse.mm(self.edges[t],self.feats[t])
+            diff_feature = torch.sub(neigboer_feature,new_neigboer_feature) #属性値の差を求める
+      
+    
+            diff_feature = diff_feature*diff_feature
+           
+            softmax_diff_feature = torch.sparse_coo_tensor(diff_feature.indices(),torch.sigmoid(torch.abs(diff_feature.values()),),diff_feature.size()).coalesce()
+            print("softmax_diff_feature",softmax_diff_feature)
+            imapct_indices = softmax_diff_feature.indices()
+            imapct_values = softmax_diff_feature.values()
+            imapact_size = softmax_diff_feature.size()
+            impact_row = imapct_indices[0]
+            scale_gamma = self.model.gamma[impact_row,0]
+            reward_impact = torch.sparse_coo_tensor(imapct_indices,imapct_values*scale_gamma,imapact_size).coalesce()
+            print("reward_impact",reward_impact)
+
+            #sparseのまま和をとる
+            # Step 1: 各行に含まれる value を group-by して sum を計算（denseを通さず）
+            row_indices = reward_impact.indices()[0]  # 各 value が属する行
+
+            # Step 2: 行ごとに加算（index_addで可能）
+            row_sums = torch.zeros(imapact_size[0])
+            row_sums = row_sums.index_add(0, row_indices, reward_impact.values())  # shape: (32,)
+
+            # Step 3: 非ゼロ行を抽出して sparse(32 x 1) に変換
+            nonzero_mask = row_sums != 0
+            nz_rows = torch.where(nonzero_mask)[0]
+            nz_values = row_sums[nz_rows]
+
+            # (row, col=0)
+            sparse_indices = torch.stack([nz_rows, torch.zeros_like(nz_rows)])
+
+            # Step 4: 再構築（この tensor は sparse かつ勾配付き）
+            #sparse_row_sums = torch.sparse_coo_tensor(
+            #    sparse_indices, nz_values/imapact_size[1], size=(imapact_size[0], 1)
+            #)
+            sparse_row_sums = torch.sparse_coo_tensor(
+                sparse_indices, nz_values, size=(imapact_size[0], 1)
+            )
+                    
+   
+            reward += sparse_row_sums
+
+            #三宅はこれ、だけどNにスケールするので...
+            #reward_value = torch.sparse.mm(impact_coo,self.model.gamma).to_sparse().coalesce()
+            
+            #reward_impact = torch.sparse_coo_tensor(reward_value.indices(),F.softmax(torch.abs(reward_value.values()),dim=0),reward_value.size())
+            #impact_coo = torch.sparse.mm(diff_feature,diff_feature.t())
+            #impact_norm = impact_coo/data.feature[0].size()[1]
+            #reward_impact = torch.sparse.mm(impact_norm,self.model.gamma).to_sparse().coalesce()
+            #reward += reward_impact
 
         #    print(torch.abs(new_feature - old_feature)+1e-4)
         
@@ -217,7 +332,7 @@ class Optimizer:
 
 if __name__ == "__main__":
     start = time.perf_counter()
-    data_name = "Twitter"
+    data_name = "NIPS"
 
     data = init_real_data(data_name)
     data_size = data.adj[0].size()[0]
@@ -237,7 +352,7 @@ if __name__ == "__main__":
     data_type = "complete"
 
 
-    print(len(data.feature),len(data.feature[0]))
+
     for t in range(5):
         #if data_name == "NIPS":
        #     optimizer.optimize(t)

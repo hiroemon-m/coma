@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler,MinMaxScaler
 from sklearn.cluster import KMeans
 import pandas as pd
 import joblib 
@@ -42,11 +42,7 @@ def calc_likelihood(X, means, sigmas, pi, K):
 
 
 def em_algorithm(N, K, X, means, sigmas):
-    """EMアルゴリズム"""
     pi = init_mixing_param(K)
-    print("pi",pi.shape)
-    print(X.shape)
-  
     likelihood = calc_likelihood(X, means, sigmas, pi, K)
     gamma = np.zeros((N, K))
     is_converged = False
@@ -55,28 +51,27 @@ def em_algorithm(N, K, X, means, sigmas):
     while not is_converged:
         # E-Step
         for n, x in enumerate(X):
-            denominator = sum(pi[k] * calc_gaussian_prob(x, means[k], sigmas[k]) for k in range(K))
-            print("----------------",[pi[k] * calc_gaussian_prob(x, means[k], sigmas[k]) / denominator for k in range(K)])
-            gamma[n] = [pi[k] * calc_gaussian_prob(x, means[k], sigmas[k]) / denominator for k in range(K)]
+            probs = np.array([pi[k] * calc_gaussian_prob(x, means[k], sigmas[k]) for k in range(K)])
+            total = np.sum(probs)
+            gamma[n] = probs / (total + 1e-10)
 
         # M-Step
         Nks = gamma.sum(axis=0)
         for k in range(K):
-            means[k] = np.sum(gamma[:, k, np.newaxis] * X, axis=0) / Nks[k]
+            means[k] = np.sum(gamma[:, k][:, np.newaxis] * X, axis=0) / Nks[k]
             diff = X - means[k]
-            sigmas[k] = (gamma[:, k] * diff.T @ diff) / Nks[k]
+            sigmas[k] = np.dot((gamma[:, k][:, np.newaxis] * diff).T, diff) / Nks[k]
             pi[k] = Nks[k] / N
 
         # 収束判定
         new_likelihood = calc_likelihood(X, means, sigmas, pi, K)
-        print(abs(new_likelihood - likelihood))
-        if abs(new_likelihood - likelihood) < 0.01 or iteration >= 20:
+        if abs(new_likelihood - likelihood) / (abs(likelihood) + 1e-10) < 1e-4 or iteration >= 100:
             is_converged = True
 
         likelihood = new_likelihood
         iteration += 1
 
-    return gamma, means, sigmas
+    return gamma, means, sigmas, pi
 
 
 def tolist(data):
@@ -92,7 +87,7 @@ def tolist(data):
 
 
 if __name__ == "__main__":
-    data_name = "Twitter"
+    data_name = "NIPS"
     persona_list = {"DBLP": [5, 25, 50], "NIPS": [3, 5, 8, 12, 16], "Twitter": [5], "Reddit": [5, 20, 50, 100, 200]}
     for k in persona_list[data_name]:
         path = f"optimize/complete/{data_name}/model.param.data.fast"
@@ -100,7 +95,7 @@ if __name__ == "__main__":
 
         # データフレーム化と標準化
         data = pd.DataFrame({"alpha": alpha, "beta": beta, "gamma": gamma})
-        scaler = StandardScaler().fit(data)
+        scaler = MinMaxScaler().fit(data)
         norm_data = scaler.transform(data)
         norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
 
@@ -115,14 +110,27 @@ if __name__ == "__main__":
         N = len(alpha)
 
         # EMアルゴリズム
-        gamma, means, sigmas = em_algorithm(N, k, em_data, means, sigmas)
+        gamma, means, sigmas,pi = em_algorithm(N, k, em_data, means, sigmas)
         print(means)
         print(sigmas)
         print(gamma)
         print(np.argmax(gamma,axis=1))
+
 
         # 保存
         joblib.dump(scaler, f"optimize/complete/{data_name}/persona={k}/scaler.pkl")
         np.save(f"optimize/complete/{data_name}/persona={k}/gamma.npy", gamma)
         np.save(f"optimize/complete/{data_name}/persona={k}/means.npy", means)
         np.save(f"optimize/complete/{data_name}/persona={k}/sigma.npy", sigmas)
+        np.save(f"optimize/complete/{data_name}/persona={k}/pi.npy", pi)
+        gamma_list = gamma.tolist()
+        with open("optimize/complete/{}/persona".format(data_name), "w") as f:
+
+            for i in range(N):
+                f.write(
+                    "{}\n".format(
+                        gamma_list[i] 
+                       
+                    )
+                )
+

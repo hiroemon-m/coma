@@ -236,7 +236,7 @@ def create_random_node(matrix_size):
 
     # スパーステンソルを作成
     sparse_tensor = torch.sparse_coo_tensor(indices, values, size=(matrix_size,matrix_size))
-    print("sparse_tensor",sparse_tensor)
+    #print("sparse_tensor",sparse_tensor)
 
 
     return remove_zeros_from_sparse(sparse_tensor)
@@ -298,7 +298,7 @@ class Actor(nn.Module):
         adj_sim_matrix = adj_sim(edges, attributes)
         exp_input = adj_sim_matrix / temp
 
-        exp_output = torch.exp(torch.where(exp_input.values()>70,torch.tensor(70),exp_input.values()))
+        exp_output = torch.exp(torch.where(exp_input.values()>50,torch.tensor(50),exp_input.values()))
 
         return torch.sparse_coo_tensor(
             exp_input.indices(),
@@ -308,15 +308,15 @@ class Actor(nn.Module):
 
     
 
-    def _disconect_prob(self, edges, attributes, x):
+    def _disconect_prob(self, edges, attributes, x,s):
         """類似度と確率の計算."""
         
-        exp_input = edges * x
-
-
-        #exp_output = torch.exp(torch.where(exp_input.values()>70,torch.tensor(70),exp_input.values()))
+        exp_input =  (attributes / x)
 
         return exp_input.coalesce()
+
+        
+        
     def _combine_sparse_tensors(self, tensor_a, tensor_b):
         """スパーステンソルの結合."""
         indices = torch.cat([tensor_a.indices(), tensor_b.indices()], dim=1)
@@ -417,14 +417,18 @@ class Actor(nn.Module):
 
             # 属性値の確率
             feat_sigmoid_prob = tanh_func(next_feat)
-            print("next_feat",next_feat.values())
-            print("feat_sigmoid_prob",feat_sigmoid_prob.values()<0)
+            
+            #print("next_feat",next_feat.values())
+            #print("feat_sigmoid_prob",feat_sigmoid_prob.values()<0)
             #確率的に行動
             feat_sigmoid_action_values = Gumbel_Sigmoid(feat_sigmoid_prob, self.temperature, hard=True)
-            feat_sigmoid_action = torch.sparse_coo_tensor(feat_sigmoid_prob.indices(), feat_sigmoid_action_values, feat_sigmoid_prob.size())
+            feat_sigmoid_action_binary = torch.sparse_coo_tensor(feat_sigmoid_prob.indices(), feat_sigmoid_action_values, feat_sigmoid_prob.size())
+            feat_sigmoid_action = sparse_hadamard_product(feat_sigmoid_action_binary,next_feat)
+            #feat_sigmoid_action = torch.sparse_coo_tensor(feat_sigmoid_prob.indices(), feat_sigmoid_action_hadamard.values(), feat_sigmoid_prob.size())
             feat_sigmoid_action = remove_zeros_from_sparse(feat_sigmoid_action)
             #決定的に行動
             #feat_sigmoid_action = next_feat
+            #三宅式
      
             # 2-hop以内の未接続ノードとのエッジ確率
             two_hop_edges = two_hop_neighbar.detach().clone()
@@ -442,7 +446,10 @@ class Actor(nn.Module):
 
             # エッジ削除確率
             #print("edgedelete")
+            #線形
             one_hop_similality = adj_dis_sim(edges, calcu_l2(next_feat))
+            #指数関数
+
             #浮動小数点の誤差を防ぐために.whereを使用
             dissim_values = torch.where((1 - one_hop_similality.values())<0,torch.tensor(0.0),1 - one_hop_similality.values())
             #print("1hop先のノード",edges._nnz())
@@ -451,7 +458,8 @@ class Actor(nn.Module):
                 one_hop_similality.indices(), dissim_values, one_hop_similality.size()
             )
        
-            delete_edge = self._disconect_prob(dissim, feat_sigmoid_action, self.x[i])
+            #delete_edge = self._disconect_prob(dissim, feat_sigmoid_action, self.x[i])
+            delete_edge = self._disconect_prob( feat_sigmoid_action, dissim,self.x[i],self.s[i])
 
             delete_edge_prob = torch.tanh(delete_edge.values())
             #print("one_hop_similality",one_hop_similality)
@@ -460,36 +468,74 @@ class Actor(nn.Module):
  
             #加算
             exit_edge_prob = (create_edge_prob + delete_edge_exit_prob).coalesce()
-            print("edge",edges._nnz())
-            print("two_hop_neighbar",two_hop_neighbar._nnz())
-            print("create_edge_prob",create_edge_prob._nnz())
-            print("delete_edge_exit_prob",delete_edge_exit_prob._nnz())
-            print("exit_edge_prob",exit_edge_prob._nnz())
-
+            #print("edge",edges._nnz())
+            #print("two_hop_neighbar",two_hop_neighbar._nnz())
+           # print("create_edge_prob",create_edge_prob._nnz())
+            #print("delete_edge_exit_prob",delete_edge_exit_prob._nnz())
+            #print("delete_edge_exit_prob",delete_edge_exit_prob.coalesce().values())
+            #print("exit_edge_prob",exit_edge_prob._nnz())
             # グラフを表示
             #dot = make_dot(exit_edge_prob,params=dict(list(self.named_parameters())))
             #dot.render("graph_ab", format="png", cleanup=True)
             #break
-        
-            
+            degree = False
+            if degree == "True":
+                # 1. 行ごとに和を取る → degree vector (N,)
+                row_indices = edges.indices()[0]
+                degree_values = torch.zeros(edges.size()[0]).index_add(0, row_indices, edges.values())
+
+                #print("degree_values",degree_values)
+                # ステップ 1: B の非ゼロの行インデックスを取得
+                row_indices = next_feat.indices()[0]  # shape: (nnz,)
+
+                # ステップ 2: 各非ゼロ要素に対応する行の degree を取得
+                row_degrees = degree_values[row_indices]  # shape: (nnz,)
+
+                # ステップ 3: values を行 degree で割る
+                new_values = next_feat.values() / (row_degrees + 1e-8)  # ゼロ割防止
+                #print("next_feat",next_feat)
+                # ステップ 4: 新しいスパーステンソルとして再構成
+                next_feat_normalized = torch.sparse_coo_tensor(
+                    next_feat.indices(), new_values, size=next_feat.size()
+                )
+            else:
+                next_feat_normalized = next_feat
+
+
+            #print("next_feat_normalized",next_feat_normalized)
 
             # エッジ確率の結合
             if i == 0:
                 edges_prob = self.persona[times][:, i] * exit_edge_prob
             else:
+       
+
                 persona_weighted = self.persona[times][:, i] * exit_edge_prob
                 edges_prob = self._combine_sparse_tensors(edges_prob, persona_weighted)
 
             # 属性確率の結合
             if i == 0:
-                print("attr_prob",feat_sigmoid_prob)
+                #print("attr_prob",feat_sigmoid_prob)
                 attr_prob = feat_sigmoid_prob * self.persona[times][:, i].view(-1, 1)
+                #次数行列でわる
+                attr_value_perosona = next_feat_normalized * self.persona[times][:, i].view(-1, 1)
             else:
                 persona_weighted_attr = feat_sigmoid_prob * self.persona[times][:, i].view(-1, 1)
                 attr_prob = self._combine_sparse_tensors(attr_prob, persona_weighted_attr)
+                attr_value_perosona = next_feat_normalized * self.persona[times][:, i].view(-1, 1)
+                attr_value_sum = self._combine_sparse_tensors(attr_value_perosona.coalesce(), attr_value_perosona.coalesce())
+        
+        attr_value_sum = attr_value_sum.coalesce()
+        mask = attr_value_sum.values().nonzero(as_tuple=True)[0]   # 非ゼロ値の位置
+        attr_value_sum = torch.sparse_coo_tensor(attr_value_sum.indices()[:, mask],
+                                torch.where(attr_value_sum.values()[mask]<1,torch.tensor(1.0),attr_value_sum.values()[mask]),
+                                attr_value_sum.size()).coalesce()
+
+
+                #print(self.persona[times][:, i])
         
         
-        return edges_prob, attr_prob, feat_sigmoid_prob, next_feat, scaled_attributes, scaled_neigh_feat
+        return edges_prob, attr_prob, feat_sigmoid_prob, attr_value_sum, scaled_attributes, scaled_neigh_feat
 
     def train(self, attributes, edges, total_past, times, agent_num, sparse_size):
 
@@ -498,27 +544,37 @@ class Actor(nn.Module):
 
 
 
-        edges_prob, attr_prob,feat_sigmoid_prob,next_feat,scaled_attributes,scaled_neigh_feat = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
+        edges_prob, _,_,_,_,_ = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
         #dot = make_dot(edges_prob,params=dict(list(self.named_parameters())))
    
         # グラフを表示
         #dot.render("graph", format="png", cleanup=True)
-
+    
         return edges_prob
         
     def get_action(self, attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size):
         with torch.no_grad():
-            edges_prob, attr_prob ,_,_,_,_ = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
+            edges_prob, attr_prob ,feat_sigmoid_prob,attr_value_sum,_,_ = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
 
             # 属性アクション
+            #print("param",self.T,self.e,self.r,self.W,self.x,self.s)
+            #print("attr_prob",attr_prob)
             attr_prob_values = attr_prob.values()
-            attr_value = torch.bernoulli(torch.sigmoid(attr_prob_values))
+            attr_prob_values = torch.where(attr_prob_values>1,torch.tensor(1.0),attr_prob_values)
+
+            attr_value = torch.bernoulli(attr_prob_values)
+            attr_value = torch.where(attr_value<0.1,torch.tensor(0.0),attr_value)
             non_zero_indices = attr_value.nonzero(as_tuple=True)[0]
             filtered_indices = attr_prob.indices()[:, non_zero_indices]
-            filtered_values = attr_prob_values[non_zero_indices]
-            attr_action = torch.sparse_coo_tensor(filtered_indices, filtered_values, attr_prob.size())
+            
+            #filtered_values = attr_prob_values[non_zero_indices]
+            attr_action = torch.sparse_coo_tensor(filtered_indices, attr_value[attr_value==1], attr_prob.size()).coalesce()
 
+            attr_action = sparse_hadamard_product(attr_value_sum,attr_action)
+          
+            #print("attr_action",attr_action.values())
             # エッジアクション
+            #edge_value = (edges_prob.values() >= 0.5).float()
             edge_value = (edges_prob.values() >= 0.5).float()
             non_zero_indices = edge_value.nonzero(as_tuple=True)[0]
             filtered_indices = edges_prob.indices()[:, non_zero_indices]
@@ -529,13 +585,22 @@ class Actor(nn.Module):
 
     def pred(self, attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size):
         with torch.no_grad():
-            edges_prob, attr_prob ,_,_,_,_ = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
+            edges_prob, attr_prob ,feat_sigmoid_prob,attr_value_sum,_,_ = self.forward(attributes, edges, two_hop_neighbar, total_past, times, agent_num, sparse_size)
 
             # 属性アクション
    
-            attr_value = Gumbel_Sigmoid(attr_prob, self.temperature, hard=True)
-            attr_action = torch.sparse_coo_tensor(attr_prob.indices(), attr_value, attr_prob.size())
-            attr_action = remove_zeros_from_sparse(attr_action)
+            attr_prob_values = attr_prob.values()
+            attr_prob_values = torch.where(attr_prob_values>1,torch.tensor(1.0),attr_prob_values)
+            attr_value = torch.bernoulli(attr_prob_values)
+            non_zero_indices = attr_value.nonzero(as_tuple=True)[0]
+            filtered_indices = attr_prob.indices()[:, non_zero_indices]
+            #filtered_values = attr_prob_values[non_zero_indices]
+            attr_action = torch.sparse_coo_tensor(filtered_indices, attr_value[attr_value==1], attr_prob.size()).coalesce()
+        
+            attr_action = sparse_hadamard_product(attr_value_sum,attr_action)
+            
+       
+
 
 
             # エッジアクション

@@ -10,7 +10,7 @@ import torch.nn as nn
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
 from sklearn.metrics import precision_recall_curve, auc
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler,MinMaxScaler
 import matplotlib.pyplot as plt
 from scipy.sparse import csc_matrix
 import pandas as pd
@@ -132,6 +132,7 @@ class PPO:
 
                 # 報酬の計算
                 G = G_r[i]
+                #print("G",torch.isnan(G))
                 reward = ratio_tensor.multiply(G)
 
                 # 損失の計算
@@ -142,6 +143,8 @@ class PPO:
                     policy_values,
                     filtered_policy.size(),
                 )         
+          
+                #print("reward",torch.isnan(reward))
                 #loss -= torch.sparse.sum(policy_tensor * reward)
                 loss -= torch.sparse.sum(policy_tensor * reward)
 
@@ -164,13 +167,13 @@ class PPO:
 
             # 勾配をチェック
             self.new_actor_optimizer.step()
-            for name, param in self.new_actor.named_parameters():
-                if param.grad is not None:
-                    print(f"Gradient for {name}:", param.grad,param.grad_fn,param.is_leaf)
+            #for name, param in self.new_actor.named_parameters():
+                #if param.grad is not None:
+                    #print(f"Gradient for {name}:", param.grad,param.grad_fn,param.is_leaf)
                     #print(f"  Moment (m): {self.new_actor_optimizer.state[param]['exp_avg']}")
                     #print(f"  Moment (v): {self.new_actor_optimizer.state[param]['exp_avg_sq']}")
-                else:
-                    print(f"No gradient for {name}",param.grad,param.grad_fn,param.is_leaf)
+                #else:
+                    #print(f"No gradient for {name}",param.grad,param.grad_fn,param.is_leaf)
 
 
             print("param",self.new_actor.T,self.new_actor.e,self.new_actor.r,self.new_actor.W,self.new_actor.x,self.new_actor.s)
@@ -199,9 +202,20 @@ class PPO:
         
     
 #@profile
-def init_mixing_param(K):
-    """混合率の初期化"""
-    return np.random.dirichlet([1] * K)
+def init_mixing_param(K, device=None):
+    """混合率の初期化 (Tensor版)"""
+    # まずランダムな値を生成
+    alpha = torch.ones(K, device=device)
+    
+    # ガンマ分布からサンプリング
+    samples = torch.zeros(K, device=device)
+    for i in range(K):
+        # ガンマ分布からのサンプリング (α=1, β=1のガンマ分布 = 指数分布)
+        # 指数分布は -log(uniform)でサンプリング可能
+        samples[i] = -torch.log(torch.rand(1, device=device))
+    
+    # 正規化して合計が1になるようにする (ディリクレ分布の性質)
+    return samples / torch.sum(samples)
 
 
 def calc_gaussian_prob(x, mean, sigma):
@@ -230,59 +244,187 @@ def calc_likelihood(X, means, sigmas, pi, K):
     """データXの現在のパラメタにおける対数尤度を計算"""
     likelihood = 0.0
     for n in X:
+        #pi[k]は時刻k
         temp = sum(pi[k] * calc_gaussian_prob(n, means[k], sigmas[k]) for k in range(K))
         likelihood += np.log(temp)
     return likelihood
 
 
-def e_step(N, K, X, means, sigmas,pi):
-    # E-Step
-    gamma = np.zeros((N, K))
+def calc_gaussian_prob_tensor(x, mean, sigma):
+    """多次元ガウス分布の確率を計算（Tensor版）- 数値安定性向上"""
+    # 入力の次元数
+    d = len(x)
+    
+    # 差分ベクトル
+    diff = x - mean
+    
+    # 共分散行列の数値安定性を確保
+    epsilon = 1e-6
+    sigma_stable = sigma.clone()
+    
+    # 対角成分に小さな値を加算
+    diag_indices = torch.arange(d)
+    sigma_stable[diag_indices, diag_indices] += epsilon
+    
+    try:
+        # コレスキー分解を使用してより安定した計算を行う
+        L = torch.linalg.cholesky(sigma_stable)
+        
+        # log|Σ|の計算 (コレスキー分解を使用)
+        log_det = 2.0 * torch.sum(torch.log(torch.diag(L)))
+        
+        # Σ^(-1)(x-μ)の計算 (コレスキー分解を使用)
+        alpha = torch.linalg.solve_triangular(L, diff, upper=False)
+        quad_form = torch.sum(alpha * alpha)
+        
+        # 多変量正規分布の対数確率
+        log_p = -0.5 * (d * torch.log(torch.tensor(2.0 * np.pi)) + log_det + quad_form)
+        
+        # 確率値を返す
+        return torch.exp(log_p)
+    
+    except:
+        # コレスキー分解が失敗した場合、通常の方法で計算
+        try:
+            # 逆行列計算
+            inv_sigma = torch.inverse(sigma_stable)
+            
+            # 二次形式の計算
+            quad_form = torch.matmul(torch.matmul(diff.unsqueeze(0), inv_sigma), diff.unsqueeze(1))
+            
+            # 行列式の計算
+            det = torch.det(sigma_stable)
+            
+            # 多変量正規分布の確率計算
+            norm_const = 1.0 / torch.sqrt((2 * torch.tensor(np.pi)) ** d * det)
+            prob = norm_const * torch.exp(-0.5 * quad_form)
+            
+            return prob.squeeze()
+        
+        except:
+            # 計算に失敗した場合の対応
+            print("WARNING: Gaussian probability calculation failed, returning very small probability")
+            return torch.tensor(1e-10)
+
+def e_step(N, K, X, means, sigmas, pi):
+    # E-Step - Tensorで実装（全て純粋にTensorで計算）
+    gamma = torch.zeros((N, K))
+    
     for n, x in enumerate(X):
-        denominator = sum(pi[0][n][k] * calc_gaussian_prob(x, means[k], sigmas[k]) for k in range(K))
-
-        gamma[n] = [pi[0][n][k] * calc_gaussian_prob(x, means[k], sigmas[k]) / denominator for k in range(K)]
-
+        # 各クラスの確率計算
+        probs = torch.zeros(K)
+        
+        for k in range(K):
+            # piの形状に応じてアクセス方法を変える
+            try:
+                # piの次元と形状をチェック
+                if pi.dim() == 3 and pi.size(0) > 0 and pi.size(1) > n and pi.size(2) > k:
+                    # (time, N, K)形式
+                    pi_value = pi[0, n, k]
+                elif pi.dim() == 2 and pi.size(0) > n and pi.size(1) > k:
+                    # (N, K)形式
+                    pi_value = pi[n, k]
+                elif pi.dim() == 1 and pi.size(0) > k:
+                    # (K,)形式
+                    pi_value = pi[k]
+                else:
+                    # それ以外の場合は均等割り当て
+                    pi_value = torch.tensor(1.0/K)
+            except Exception as e:
+                print(f"Warning: Error accessing pi at index [n={n}, k={k}]: {e}")
+                print(f"pi shape: {pi.shape if hasattr(pi, 'shape') else 'unknown'}")
+                # エラー発生時は均等分布を使用
+                pi_value = torch.tensor(1.0/K)
+            
+            # ガウス確率の計算（Tensor版）
+            gaussian_prob = calc_gaussian_prob_tensor(x, means[k], sigmas[k])
+            
+            # 確率計算
+            probs[k] = pi_value * gaussian_prob
+        
+        # 正規化項の計算
+        denominator = torch.sum(probs)
+        
+        # 各クラスの事後確率計算（Tensor演算）
+        if denominator > 1e-10:
+            gamma[n] = probs / denominator
+        else:
+            # ゼロ除算防止（均等分布）
+            gamma[n] = torch.ones(K) / K
+    
     return gamma
 
-def m_step(X,gamma,K):
-    # M-Step
-    Nks = gamma.sum(axis=0)
-    pi = init_mixing_param(K)
-    #k:ペルスナ
-    for k in range(K):
-        pi[k] = Nks[k] / N #混合比の計算
-        means[k] = np.sum(gamma[:, k, np.newaxis] * X, axis=0) / Nks[k]
-        diff = X - means[k]
-        sigmas[k] = (gamma[:, k] * diff.T @ diff) / Nks[k]
+def m_step(X, prob, K, N, means, sigmas):
+    # M-Step - Tensorで計算
+    gamma = prob[0]  # numpy変換せずTensorのまま
+    pi = torch.zeros(K)
+    print("gamma", gamma)
+
+    # 合計をTensorで計算
+    Nks = torch.sum(gamma, dim=0)
     
-    return pi, means ,sigmas
+
+
+    # k:ペルスナ
+    for k in range(K):
+        pi[k] = Nks[k] / N  # 混合比の計算
+        
+        # 平均計算（Tensorで）
+        # gammaのk列を取得して拡張
+        gamma_k = gamma[:, k]
+        
+        # 重み付き平均（各データポイントにガンマの重みを掛ける）
+        weighted_sum = torch.sum(gamma_k.unsqueeze(1) * X, dim=0)
+        means[k] = weighted_sum / Nks[k]
+        
+        # 共分散計算
+        diff = X - means[k]  # 各データポイントと平均の差
+        
+        # 各データポイントごとの共分散行列を計算
+        # 形状を整える: (N, 3) -> (N, 3, 1) * (N, 1, 3) = (N, 3, 3)
+        diff_expanded = diff.unsqueeze(2)  # (N, 3, 1)
+        outer_products = torch.bmm(diff_expanded, diff_expanded.transpose(1, 2))  # (N, 3, 3)
+        
+        # 各共分散行列にガンマの重みを掛けて合計
+        weighted_cov = torch.sum(gamma_k.unsqueeze(1).unsqueeze(2) * outer_products, dim=0)  # (3, 3)
+        
+        # 正規化
+        sigmas[k] = weighted_cov / Nks[k]
+    
+    return pi, means, sigmas
 
 
 
-def em_algorithm(alpha,beta,gamma,means,sigmas,mixture_ration,scaler):
-    """EMアルゴリズム"""
+def em_algorithm(alpha, beta, gamma, means, sigmas, pi, mixture_ration):
+    """EMアルゴリズム - Tensorで計算"""
     N = len(mixture_ration[0])
-    data = pd.DataFrame({
-        "alpha": torch.squeeze(alpha).detach().numpy(), 
-        "beta": torch.squeeze(beta).detach().numpy(),
-        "gamma": torch.squeeze(gamma).detach().numpy()
-         })
+    
+    # データの準備（Tensorのまま）
+    data_tensor = torch.stack([
+        torch.squeeze(alpha),
+        torch.squeeze(beta),
+        torch.squeeze(gamma)
+    ], dim=1)
+    
+    # 正規化処理（MinMaxScaler相当の処理をTensorで実装）
+    min_vals, _ = torch.min(data_tensor, dim=0, keepdim=True)
+    max_vals, _ = torch.max(data_tensor, dim=0, keepdim=True)
+    norm_tensor = (data_tensor - min_vals) / (max_vals - min_vals + 1e-8)  # ゼロ除算防止
+    
+    # データを形状維持（data_tensorはshape[N, 3]）
+    K = len(mixture_ration[0][0])
+    
 
-    #norm_data = StandardScaler().fit_transform(data)
-    #norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
-    norm_data = scaler.transform(data)
-    norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
-    norm_tensor = torch.tensor(norm_df.values)
-    K = len(mixture_ration)
-    pi = mixture_ration
-    #M-step
-    #pi, means, sigmas = m_step(X,pi,K)
-
-    #E-step
-    rik = e_step(N, K, norm_tensor, means, sigmas,pi)
-
-    return rik
+    
+    print("pi",pi)
+    # M-step - Tensorで計算
+    pi, means, sigmas = m_step(norm_tensor, mixture_ration, K, N, means, sigmas)
+    
+    # E-step - 結果はnumpy変換なしでTensorのまま
+    rik = e_step(N, K, norm_tensor, means, sigmas, pi)
+    rik = rik.detach().clone()
+    
+    return rik,sigmas,pi
 
 
 
@@ -332,6 +474,11 @@ def execute_data(persona_num,data_name,data_type):
     sigmas = sigmas.astype("float32")
     sigmas = torch.from_numpy(sigmas).to(device)
 
+    path = path_n+"persona={}/pi.npy".format(int(persona_num))
+    pi = np.load(path)
+    pi = pi.astype("float32")
+    pi = torch.from_numpy(pi).to(device)
+
     path = path_n+"persona={}/scaler.pkl".format(int(persona_num))
     scaler = joblib.load(path)
 
@@ -350,13 +497,16 @@ def execute_data(persona_num,data_name,data_type):
     #パラメータ
     if data_name == "NIPS":
         mu = 0.194
-        lr = 1.563e-06
+        #lr = 1.563e-06
+        lr = 0.01
         lr = 0.001
         temperature = 0.01
-        T = torch.tensor([1.055 for _ in range(persona_num)], dtype=torch.float32)
-        e = torch.tensor([1.347 for _ in range(persona_num)], dtype=torch.float32)
-        r = torch.tensor([0.697 for _ in range(persona_num)], dtype=torch.float32)
-        w = torch.tensor([0.026 for _ in range(persona_num)], dtype=torch.float32)
+        T = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        e = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        r = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
+        w = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        x = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        s = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
     
     elif data_name == "DBLP":
         mu = 0.0229
@@ -398,26 +548,28 @@ def execute_data(persona_num,data_name,data_type):
         # E-step
         #mixture_ratio:混合比率
 
-        if episode <= 10:
+        if episode <= 0:
             mixture_ratio = persona_ration
 
        
         else:
-            new_mixture_ratio = em_algorithm(alpha,beta,gamma,means,sigmas,mixture_ratio,scaler)
+            new_mixture_ratio,sigmas,pi = em_algorithm(alpha, beta, gamma, means, sigmas, pi, mixture_ratio)
+          
          
      
                       
             # スムージングファクター
-            if episode <= 20:
-                clip_ration = 0.2
-                updated_prob_tensor = (1 - clip_ration) * mixture_ratio + clip_ration * torch.from_numpy(new_mixture_ratio.astype("float32"))
-                mixture_ratio = updated_prob_tensor.float()
+            if episode <= 15:
+                clip_ration = 0.8
+                updated_prob_tensor = (1 - clip_ration) * mixture_ratio + clip_ration * new_mixture_ratio
+                mixture_ratio = updated_prob_tensor
+                
                 del updated_prob_tensor
                 gc.collect()
             else:
-                mixture_ratio = torch.from_numpy(new_mixture_ratio.astype("float32"))
-                ratio_size = mixture_ratio.size()
-                mixture_ratio = mixture_ratio.expand(5,ratio_size[0],ratio_size[1])
+                # new_mixture_ratioは既にTensorなので、型変換は不要
+                ratio_size = new_mixture_ratio.size()
+                mixture_ratio = new_mixture_ratio.expand(5, ratio_size[0], ratio_size[1])
  
         
         alpha = means[:,0]
@@ -427,7 +579,7 @@ def execute_data(persona_num,data_name,data_type):
 
 
         #personaはじめは均等
-        
+        print("mixture_ratio",mixture_ratio)
                     #環境の設定
         obs = Env(
             agent_num=agent_num,
@@ -436,7 +588,7 @@ def execute_data(persona_num,data_name,data_type):
             alpha=alpha,
             beta=beta,
             gamma=gamma,
-            persona=mixture_ratio
+            persona=mixture_ratio.detach().clone()
         )
 
 
@@ -508,6 +660,8 @@ def execute_data(persona_num,data_name,data_type):
         alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,s,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler,total_past)
 
         print("Updated Reward")
+        print("persona",mixture_ratio)
+        print("reward",episode_reward)
         
         #ln_before = lx
         #ln = agents.ln
@@ -523,7 +677,7 @@ def execute_data(persona_num,data_name,data_type):
             print(episodes_reward)
             print(f"episode: {episode}, average reward: {sum(episodes_reward[-10:]) / 10}")
 
-        if episode >=20:
+        if episode >=30:
             flag = False
 
         else:
@@ -545,14 +699,14 @@ def execute_data(persona_num,data_name,data_type):
     print("パラメータ",T,e,r,w)
 
             
-    new_mixture_ratio = em_algorithm(
+    new_mixture_ratio,_,_ = em_algorithm(
                 alpha,
                 beta,
                 gamma,
                 means,
                 sigmas,
-                mixture_ratio,
-                scaler
+                pi,
+                mixture_ratio
             )
 
                       
@@ -562,7 +716,7 @@ def execute_data(persona_num,data_name,data_type):
     # a = 0.1
     #print("nm",new_mixture_ratio)
     #updated_prob_tensor = (1 - a) * mixture_ratio + a * new_mixture_ratio
-    mixture_ratio = torch.from_numpy(new_mixture_ratio.astype("float32"))
+    mixture_ratio = new_mixture_ratio
     ratio_size = mixture_ratio.size()
     mixture_ratio = mixture_ratio.expand(5,ratio_size[0],ratio_size[1])
     agents = PPO(obs,agent_num, input_size, action_dim,lr, gamma,T,e,r,w,x,s,mixture_ratio,temperature,story_count,data_name)
@@ -705,7 +859,7 @@ if __name__ == "__main__":
     #[5,8,12,16,24,32,64,128]
     #[4,8,12,16]
     s = time.time()
-    for i in [5]:
-        execute_data(i,"Twitter","complete")
+    for i in [3]:
+        execute_data(i,"NIPS","complete")
     e = time.time()
     print("time:",s-e)

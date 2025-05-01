@@ -373,12 +373,12 @@ def execute_data(persona_num,data_name,data_type):
         #lr = 0.0011929646522007911
         lr = 0.005
         temperature = 0.01
-        T = torch.tensor([1.50 for _ in range(persona_num)], dtype=torch.float32)
-        e = torch.tensor([0.50 for _ in range(persona_num)], dtype=torch.float32)
-        r = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
+        T = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
+        e = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
+        r = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
         w = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
-        x = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
-        s = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
+        x = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
+        s = torch.tensor([1.00 for _ in range(persona_num)], dtype=torch.float32)
         
 
     ln = 0
@@ -398,7 +398,7 @@ def execute_data(persona_num,data_name,data_type):
         # E-step
         #mixture_ratio:混合比率
 
-        if episode <= 10:
+        if episode <= 15:
             mixture_ratio = persona_ration
 
        
@@ -505,7 +505,8 @@ def execute_data(persona_num,data_name,data_type):
         T,e,r,w,x,s= agents.train(mu,action_dim,feat_size,prob_sparse_memory,edge_sparse_memory,feat_sparse_memory,reward_memory,total_past)
         print("Updated Policy")
 
-        alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,s,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler,total_past)
+        if episode > 15:
+            alpha,beta,gamma = agents.update_reward(obs,T,e,r,w,x,s,mixture_ratio,temperature,action_dim,feat_size,edge_sparse[LEARNED_TIME],feat_sparse[LEARNED_TIME],scaler,total_past)
 
         print("Updated Reward")
         

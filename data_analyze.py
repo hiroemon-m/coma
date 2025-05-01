@@ -1,6 +1,87 @@
 from init_real_data import init_real_data
 import torch
 from sklearn.preprocessing import MinMaxScaler,Normalizer
+def calcu_l2(feat_data):
+    """スパーステンソルのL2ノルムで正規化."""
+    feat_data = feat_data.coalesce()
+    norm_indices = feat_data.indices()
+    norm_values = feat_data.values()
+    row_indices = norm_indices[0]
+    squared_values = norm_values ** 2
+    row_sums = torch.zeros(feat_data.size(0), device=feat_data.device)
+    row_sums.index_add_(0, row_indices, squared_values)
+    l2_norms = torch.sqrt(row_sums + 1e-10)
+    normalized_values = norm_values / l2_norms[row_indices]
+    return torch.sparse_coo_tensor(norm_indices, normalized_values, feat_data.size()).coalesce()
+
+def sparse_hadamard_product(adj, similarity):
+    """
+    スパーステンソルのアダマール積を計算。共通インデックスのみを効率的に扱う。
+    """
+    # スパーステンソルを圧縮
+    adj = adj.coalesce()
+    similarity = similarity.coalesce()
+
+    # 非ゼロ要素のインデックスと値を取得
+    indices_a, values_a = adj.indices(), adj.values()
+    indices_b, values_b = similarity.indices(), similarity.values()
+
+    # (行, 列) を結合してユニークなキーとして扱う
+    indices_a_flat = indices_a[0] * adj.size(1) + indices_a[1]
+
+    indices_b_flat = indices_b[0] * similarity.size(1) + indices_b[1]
+
+    # 共通インデックスを特定
+    common_mask = torch.isin(indices_a_flat, indices_b_flat)
+
+    # 共通インデックスに対応する値を取得
+    common_indices = indices_a[:, common_mask]
+    #common_indices = indices_a[:, common_mask]
+    common_values_a = values_a[common_mask]
+
+    # `indices_a_flat` と `indices_b_flat` の対応を見つけて、`values_b` を合わせる
+
+    matched_b_indices = torch.searchsorted(indices_b_flat, indices_a_flat[common_mask])
+
+    common_values_b = values_b[matched_b_indices]
+
+    # アダマール積（要素ごとの積）を計算
+    common_values = common_values_a * common_values_b
+
+    # スパーステンソルとして返す
+    result = torch.sparse_coo_tensor(common_indices, common_values, adj.size())
+    result = result.coalesce()
+    return result
+
+
+
+def adj_sim(adj, feat):
+    """隣接行列の類似度計算."""
+    adj_sparse = adj.coalesce()
+    feat_sparse = feat.coalesce()
+    normalized_feat = calcu_l2(feat)
+    similarity = torch.sparse.mm(normalized_feat, normalized_feat.t()).coalesce()
+    print("similarity",similarity.values()[:20])
+    #neigh_similarity = sparse_hadamard_product(adj_sparse, similarity).coalesce()
+    neigh_similarity = similarity
+
+
+    return neigh_similarity
+
+def process_similarity(edges, attributes, weight, temp):
+    """類似度と確率の計算."""
+    
+    adj_sim_matrix = adj_sim(edges, attributes)
+    exp_input = adj_sim_matrix / temp
+
+    exp_output = torch.exp(torch.where(exp_input.values()>70,torch.tensor(70),exp_input.values()))
+
+    return torch.sparse_coo_tensor(
+        exp_input.indices(),
+        exp_output * weight,
+        exp_input.size()
+    ).coalesce()
+
 
 LEARNED_TIME = 4
 GENERATE_TIME = 5
@@ -98,12 +179,33 @@ for time in range(TOTAL_TIME):
         print("一つ前の時刻で類似しているノードと同じ属性値")
         norm = attr_before.norm(dim=1)[:, None] + 1e-8
         attr_before_norm = attr_before.div(norm)
-        sim = torch.matmul(attr_before_norm,torch.t(attr_before_norm))
+        sim = torch.mm(attr_before_norm,torch.t(attr_before_norm))
         sim_index = torch.where(sim>0,1,0)
         sim_index = sim_index.to(torch.float32)
         sim_attr = torch.matmul(sim_index,attr_before)
+        a = torch.zeros(15000,15000)
+        #print(sim.size(),attr_before.size())
+        #print((sim>0).size())
+        #print(edge.size())
+        #print(edge[sim>0].size())
+        attr_now = load_data.feature[time].to_dense()
+        norm = attr_now.norm(dim=1)[:, None] + 1e-8
+        attr_now_norm = attr_now.div(norm)
+        sim_now = torch.mm(attr_now_norm,torch.t(attr_now_norm))
+        next_edge = load_data.adj[time+1].to_dense()
+        attr_one = torch.zeros(15000,15000)
+        attr_one[sim_now>0] = next_edge[sim_now>0]
+        print("類似度の高いエッジのこと",torch.sum(torch.where(((attr_one))>0,1,0)))
+
+        ed = process_similarity(load_data.adj[time],attr_now.to_sparse(),1,1).to_dense()
+        attr_two = torch.zeros(15000,15000)
+        attr_two[ed>0] = next_edge[ed>0]
+        print("類似度の高いエッジのこと",torch.sum(torch.where(((attr_two))>0,1,0)))
+        print("類似度の高いエッジのこと",torch.sum(torch.where(((ed))>0,1,0)))
+
         print(torch.sum((attr>0)&(sim_attr>0)))
 
+        
         #全体で流行の属性値の影響を受けてる説
         #属性値を行方向に加算を行う。閾値以上のものとの一致度調べる
         #for n in range(int((torch.max(torch.sum(attr_before,dim=0)).item()))):
