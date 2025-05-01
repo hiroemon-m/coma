@@ -95,9 +95,12 @@ if __name__ == "__main__":
 
         # データフレーム化と標準化
         data = pd.DataFrame({"alpha": alpha, "beta": beta, "gamma": gamma})
-        scaler = MinMaxScaler().fit(data)
-        norm_data = scaler.transform(data)
-        norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
+        #scaler = MinMaxScaler().fit(data)
+        #norm_data = scaler.transform(data)
+        #norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
+
+        norm_df = data
+
 
         # K-means クラスタリング
         pred = KMeans(n_clusters=k).fit_predict(norm_df)
@@ -111,14 +114,13 @@ if __name__ == "__main__":
 
         # EMアルゴリズム
         gamma, means, sigmas,pi = em_algorithm(N, k, em_data, means, sigmas)
+        print(norm_df)
         print(means)
-        print(sigmas)
         print(gamma)
-        print(np.argmax(gamma,axis=1))
 
 
         # 保存
-        joblib.dump(scaler, f"optimize/complete/{data_name}/persona={k}/scaler.pkl")
+        #joblib.dump(scaler, f"optimize/complete/{data_name}/persona={k}/scaler.pkl")
         np.save(f"optimize/complete/{data_name}/persona={k}/gamma.npy", gamma)
         np.save(f"optimize/complete/{data_name}/persona={k}/means.npy", means)
         np.save(f"optimize/complete/{data_name}/persona={k}/sigma.npy", sigmas)

@@ -405,12 +405,25 @@ def em_algorithm(alpha, beta, gamma, means, sigmas, pi, mixture_ration):
         torch.squeeze(beta),
         torch.squeeze(gamma)
     ], dim=1)
+
+    scaler = ""
     
-    # 正規化処理（MinMaxScaler相当の処理をTensorで実装）
-    min_vals, _ = torch.min(data_tensor, dim=0, keepdim=True)
-    max_vals, _ = torch.max(data_tensor, dim=0, keepdim=True)
-    norm_tensor = (data_tensor - min_vals) / (max_vals - min_vals + 1e-8)  # ゼロ除算防止
-    
+    if scaler == "minmax":
+        # 正規化処理（MinMaxScaler相当の処理をTensorで実装）
+        min_vals, _ = torch.min(data_tensor, dim=0, keepdim=True)
+        max_vals, _ = torch.max(data_tensor, dim=0, keepdim=True)
+        norm_tensor = (data_tensor - min_vals) / (max_vals - min_vals + 1e-8)  # ゼロ除算防止
+    elif scaler == "standard":
+        # データの標準化（StandardScaler相当の処理をTensorで実装）
+        mean_vals = torch.mean(data_tensor, dim=0, keepdim=True)
+        std_vals = torch.std(data_tensor, dim=0, keepdim=True)
+        stand_tensor = (data_tensor - mean_vals) / (std_vals + 1e-8)  # ゼロ除算防止
+    else:
+        norm_tensor = data_tensor
+
+
+      
+        
     # データを形状維持（data_tensorはshape[N, 3]）
     K = len(mixture_ration[0][0])
     
@@ -842,7 +855,7 @@ def execute_data(persona_num,data_name,data_type):
             calc_nll_log[count][test_time] = error_edge.item()
            
 
-            path_save = "experiment_data"
+            path_save = "experiment_data/{}/{}/persona={}".format(data_type,data_name,persona_num)
 
             np.save(path_save+"/proposed_edge_auc", calc_log)
             np.save(path_save+"/proposed_edge_nll", calc_nll_log)
@@ -859,7 +872,7 @@ if __name__ == "__main__":
     #[5,8,12,16,24,32,64,128]
     #[4,8,12,16]
     s = time.time()
-    for i in [3]:
+    for i in [3,16]:
         execute_data(i,"NIPS","complete")
     e = time.time()
     print("time:",s-e)

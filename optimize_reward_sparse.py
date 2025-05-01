@@ -245,7 +245,17 @@ class Optimizer:
     
             diff_feature = diff_feature*diff_feature
            
-            softmax_diff_feature = torch.sparse_coo_tensor(diff_feature.indices(),torch.sigmoid(torch.abs(diff_feature.values()),),diff_feature.size()).coalesce()
+            softmax_diff_feature = torch.sparse_coo_tensor(diff_feature.indices(),(torch.abs(diff_feature.values())),diff_feature.size()).coalesce()
+            #min-maxスケーリング
+            min_value = torch.min(softmax_diff_feature.values())
+            max_value = torch.max(softmax_diff_feature.values())
+            softmax_diff_feature_scaling = (softmax_diff_feature.values() - min_value) / (max_value - min_value)
+            filltered_indices = softmax_diff_feature.indices()[:,softmax_diff_feature_scaling.nonzero(as_tuple=True)[0]]
+            filltered_values = softmax_diff_feature_scaling[softmax_diff_feature_scaling.nonzero(as_tuple=True)[0]]
+
+            softmax_diff_feature = torch.sparse_coo_tensor(filltered_indices,filltered_values,softmax_diff_feature.size()).coalesce()
+
+            
             print("softmax_diff_feature",softmax_diff_feature)
             imapct_indices = softmax_diff_feature.indices()
             imapct_values = softmax_diff_feature.values()
@@ -278,6 +288,7 @@ class Optimizer:
             sparse_row_sums = torch.sparse_coo_tensor(
                 sparse_indices, nz_values, size=(imapact_size[0], 1)
             )
+
                     
    
             reward += sparse_row_sums
