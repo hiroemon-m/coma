@@ -41,26 +41,44 @@ def calc_likelihood(X, means, sigmas, pi, K):
     return likelihood
 
 
-def em_algorithm(N, K, X, means, sigmas):
+def em_algorithm(N, K, X, means, sigmas,variance_scale ):
     pi = init_mixing_param(K)
     likelihood = calc_likelihood(X, means, sigmas, pi, K)
     gamma = np.zeros((N, K))
     is_converged = False
     iteration = 0
-
+    T = 2.5
     while not is_converged:
         # E-Step
+        T = 1.5  # 例：温度
         for n, x in enumerate(X):
-            probs = np.array([pi[k] * calc_gaussian_prob(x, means[k], sigmas[k]) for k in range(K)])
+            probs = np.array([
+                (pi[k] * calc_gaussian_prob(x, means[k], sigmas[k])) ** (1 / T)
+                for k in range(K)
+            ])
             total = np.sum(probs)
             gamma[n] = probs / (total + 1e-10)
 
+
         # M-Step
         Nks = gamma.sum(axis=0)
+
         for k in range(K):
+            if Nks[k] < 1e-2:
+                # 「死んだクラスタ」を再初期化
+                means[k] = np.random.uniform(-2, 2, X.shape[1])
+                sigmas[k] = np.eye(X.shape[1]) * 0.5
+
+                
+                pi[k] = 1.0 / K  # 均等に戻す
+                continue  # 以下の更新はスキップ
+
             means[k] = np.sum(gamma[:, k][:, np.newaxis] * X, axis=0) / Nks[k]
             diff = X - means[k]
+            
             sigmas[k] = np.dot((gamma[:, k][:, np.newaxis] * diff).T, diff) / Nks[k]
+            sigmas[k] *= variance_scale
+            sigmas[k] += np.eye(diff.shape[1]) * 1e-2
             pi[k] = Nks[k] / N
 
         # 収束判定
@@ -87,8 +105,16 @@ def tolist(data):
 
 
 if __name__ == "__main__":
-    data_name = "NIPS"
-    persona_list = {"DBLP": [5, 25, 50], "NIPS": [3, 5, 8, 12, 16], "Twitter": [5], "Reddit": [5, 20, 50, 100, 200]}
+    data_name = "Twitter"
+    persona_list = {"DBLP": [5, 25, 50], "NIPS": [3, 5, 8, 12, 16], "Twitter": [20,50], "Reddit": [5, 20, 50, 100, 200]}
+    if data_name == "DBLP": 
+        variance_scale = 3.0 #
+    elif data_name == "NIPS":
+        variance_scale = 1.5 #
+    elif data_name == "Twitter":
+        variance_scale = 1.0 #
+
+
     for k in persona_list[data_name]:
         path = f"optimize/complete/{data_name}/model.param.data.fast"
         alpha, beta, gamma = tolist(path)
@@ -96,10 +122,12 @@ if __name__ == "__main__":
         # データフレーム化と標準化
         data = pd.DataFrame({"alpha": alpha, "beta": beta, "gamma": gamma})
         #scaler = MinMaxScaler().fit(data)
-        #norm_data = scaler.transform(data)
-        #norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
+        scaler = StandardScaler().fit(data)
+        norm_data = scaler.transform(data)
+        norm_df = pd.DataFrame(norm_data, columns=["alpha", "beta", "gamma"])
+        
 
-        norm_df = data
+       
 
 
         # K-means クラスタリング
@@ -113,7 +141,7 @@ if __name__ == "__main__":
         N = len(alpha)
 
         # EMアルゴリズム
-        gamma, means, sigmas,pi = em_algorithm(N, k, em_data, means, sigmas)
+        gamma, means, sigmas,pi = em_algorithm(N, k, em_data, means, sigmas,variance_scale)
         print(norm_df)
         print(means)
         print(gamma)

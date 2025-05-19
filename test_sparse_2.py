@@ -52,10 +52,10 @@ class PPO:
         self.new_actor = Actor(T,e,r,w,x,s,rik,self.agent_num,temperature)
         self.update_actor = Actor(T,e,r,w,x,s,rik,self.agent_num,temperature)
         #adamにモデルを登録
-        #self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr) 
-        #self.new_actor_optimizer = torch.optim.Adam(self.new_actor.parameters(), lr=lr)
-        self.actor_optimizer = torch.optim.SGD(self.actor.parameters(), lr=lr) 
-        self.new_actor_optimizer = torch.optim.SGD(self.new_actor.parameters(), lr=lr)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr) 
+        self.new_actor_optimizer = torch.optim.Adam(self.new_actor.parameters(), lr=lr)
+        #self.actor_optimizer = torch.optim.SGD(self.actor.parameters(), lr=lr) 
+        #self.new_actor_optimizer = torch.optim.SGD(self.new_actor.parameters(), lr=lr)
 
     def sparse_clip_grad_norm_(self,parameters, max_norm):
         for param in parameters:
@@ -167,13 +167,13 @@ class PPO:
 
             # 勾配をチェック
             self.new_actor_optimizer.step()
-            #for name, param in self.new_actor.named_parameters():
-                #if param.grad is not None:
-                    #print(f"Gradient for {name}:", param.grad,param.grad_fn,param.is_leaf)
-                    #print(f"  Moment (m): {self.new_actor_optimizer.state[param]['exp_avg']}")
-                    #print(f"  Moment (v): {self.new_actor_optimizer.state[param]['exp_avg_sq']}")
-                #else:
-                    #print(f"No gradient for {name}",param.grad,param.grad_fn,param.is_leaf)
+            for name, param in self.new_actor.named_parameters():
+                if param.grad is not None:
+                    print(f"Gradient for {name}:", param.grad,param.grad_fn,param.is_leaf)
+                    print(f"  Moment (m): {self.new_actor_optimizer.state[param]['exp_avg']}")
+                    print(f"  Moment (v): {self.new_actor_optimizer.state[param]['exp_avg_sq']}")
+                else:
+                    print(f"No gradient for {name}",param.grad,param.grad_fn,param.is_leaf)
 
 
             print("param",self.new_actor.T,self.new_actor.e,self.new_actor.r,self.new_actor.W,self.new_actor.x,self.new_actor.s)
@@ -526,10 +526,13 @@ def execute_data(persona_num,data_name,data_type):
         #lr = 0.000952
         lr = 0.001
         temperature = 0.01
-        T = torch.tensor([1.481 for _ in range(persona_num)], dtype=torch.float32)
-        e = torch.tensor([0.759 for _ in range(persona_num)], dtype=torch.float32)
-        r = torch.tensor([0.868 for _ in range(persona_num)], dtype=torch.float32)
-        w = torch.tensor([0.846 for _ in range(persona_num)], dtype=torch.float32)
+
+        T = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        e = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        r = torch.tensor([0.5 for _ in range(persona_num)], dtype=torch.float32)
+        w = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        x = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
+        s = torch.tensor([1.0 for _ in range(persona_num)], dtype=torch.float32)
   
     else:
         mu = 0.13608351100239896
@@ -733,7 +736,8 @@ def execute_data(persona_num,data_name,data_type):
     ratio_size = mixture_ratio.size()
     mixture_ratio = mixture_ratio.expand(5,ratio_size[0],ratio_size[1])
     agents = PPO(obs,agent_num, input_size, action_dim,lr, gamma,T,e,r,w,x,s,mixture_ratio,temperature,story_count,data_name)
-    path_save = "experiment_data"
+
+    path_save = "experiment_data/{}/{}/persona={}".format(data_type,data_name,persona_num)
     np.save(path_save+"/train_persona_ration",np.concatenate([mixture_ratio.detach().numpy()],axis=0))
     np.save(path_save+"/train_paramerter",np.concatenate([T.detach().numpy(),e.detach().numpy(),r.detach().numpy(),w.detach().numpy()],axis=0))
 
@@ -855,7 +859,7 @@ def execute_data(persona_num,data_name,data_type):
             calc_nll_log[count][test_time] = error_edge.item()
            
 
-            path_save = "experiment_data/{}/{}/persona={}".format(data_type,data_name,persona_num)
+           
 
             np.save(path_save+"/proposed_edge_auc", calc_log)
             np.save(path_save+"/proposed_edge_nll", calc_nll_log)
@@ -872,7 +876,8 @@ if __name__ == "__main__":
     #[5,8,12,16,24,32,64,128]
     #[4,8,12,16]
     s = time.time()
-    for i in [3,16]:
-        execute_data(i,"NIPS","complete")
+    #for i in [3,5,8,12,16]:
+    for i in [5,50,100]:
+        execute_data(i,"Twitter","complete")
     e = time.time()
     print("time:",s-e)

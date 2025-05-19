@@ -305,9 +305,7 @@ class Env(nn.Module):
         reward_sim = similality_coo.multiply(alpha_all).coalesce()
         #cost計算の勾配追跡
         reward_cost = self.edges.multiply(beta_all).to_sparse().coalesce()
-        print("reward_sim.size()",reward_sim.size())            
-        print("reward_cost.size()",reward_cost.size())            
-        print("reward_impact.size()",reward_impact.size())  
+
         reward = reward_sim - reward_cost + reward_impact
         reward_loss = torch.sparse.sum(reward)
 

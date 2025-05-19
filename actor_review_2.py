@@ -51,11 +51,13 @@ def Gumbel_Sigmoid(probabilities, tau=1.0, hard=False):
     - samples (torch.Tensor): サンプリング結果（連続値または離散値）。
     """
     # Gumbelノイズを加える
-    input_prob = probabilities.coalesce().values()
-    input_prob = torch.where(input_prob<0,torch.tensor(0.0),1)
-    noise = torch.rand_like(input_prob)
+    input_prob = probabilities.coalesce()
+    input_values = input_prob.values()
+    input_indices = input_prob.indices()
+    input_values = torch.where(input_values<0,torch.tensor(0.0),input_values)
+    noise = torch.rand_like(input_values)
     gumbel_noise = -torch.log(-torch.log(noise + 1e-20) + 1e-20)
-    logits = torch.log(input_prob + 1e-20) - torch.log(1 - input_prob + 1e-20)
+    logits = torch.log(input_values + 1e-20) - torch.log(1 - input_values + 1e-20)
     y = torch.sigmoid((logits + gumbel_noise) / tau)
     
     if hard:
@@ -68,6 +70,7 @@ def Gumbel_Sigmoid(probabilities, tau=1.0, hard=False):
 
 def tanh_func(data,data_name="DBLP"):
     """スパーステンソルのtanh計算."""
+     # Min-Max スケーリング
     tanhx = torch.tanh(data.values())
     tanhx = torch.where(tanhx<0,torch.tensor(0.0),tanhx)
     tanhx_indices = tanhx.nonzero(as_tuple=True)[0]
@@ -106,96 +109,86 @@ def calcu_l2(feat_data):
 
 def sparse_hadamard_product(adj, similarity):
     """
-    スパーステンソルのアダマール積を計算。共通インデックスのみを効率的に扱う。
+    スパーステンソルのアダマール積（共通インデックスのみ）。
+    勾配を保ったまま効率的に計算。
     """
-    # スパーステンソルを圧縮
     adj = adj.coalesce()
     similarity = similarity.coalesce()
 
-    # 非ゼロ要素のインデックスと値を取得
+    # いずれかが空なら空結果を返す（安全対策）
+    if adj._nnz() == 0 or similarity._nnz() == 0:
+        return torch.sparse_coo_tensor(
+            torch.zeros((2, 0), dtype=torch.long, device=adj.device),
+            torch.tensor([], dtype=adj.dtype, device=adj.device),
+            adj.size()
+        ).coalesce()
+
     indices_a, values_a = adj.indices(), adj.values()
     indices_b, values_b = similarity.indices(), similarity.values()
 
-    # (行, 列) を結合してユニークなキーとして扱う
-    indices_a_flat = indices_a[0] * adj.size(1) + indices_a[1]
+    index_a = indices_a[0] * adj.size(1) + indices_a[1]
+    index_b = indices_b[0] * similarity.size(1) + indices_b[1]
 
-    indices_b_flat = indices_b[0] * similarity.size(1) + indices_b[1]
+    sorted_b, b_sort_idx = torch.sort(index_b)
+    search_idx = torch.searchsorted(sorted_b, index_a)
 
-    # 共通インデックスを特定
-    common_mask = torch.isin(indices_a_flat, indices_b_flat)
+    # 範囲外アクセス対策
+    if sorted_b.size(0) == 0:
+        return torch.sparse_coo_tensor(
+            torch.zeros((2, 0), dtype=torch.long, device=adj.device),
+            torch.tensor([], dtype=adj.dtype, device=adj.device),
+            adj.size()
+        ).coalesce()
 
-    # 共通インデックスに対応する値を取得
-    common_indices = indices_a[:, common_mask]
-    #common_indices = indices_a[:, common_mask]
-    common_values_a = values_a[common_mask]
+    search_idx = torch.clamp(search_idx, max=sorted_b.size(0) - 1)
 
-    # `indices_a_flat` と `indices_b_flat` の対応を見つけて、`values_b` を合わせる
+    matched_mask = sorted_b[search_idx] == index_a
 
-    matched_b_indices = torch.searchsorted(indices_b_flat, indices_a_flat[common_mask])
+    if matched_mask.sum() == 0:
+        return torch.sparse_coo_tensor(
+            torch.zeros((2, 0), dtype=torch.long, device=adj.device),
+            torch.tensor([], dtype=adj.dtype, device=adj.device),
+            adj.size()
+        ).coalesce()
 
-    common_values_b = values_b[matched_b_indices]
+    matched_indices = indices_a[:, matched_mask]
+    matched_values_a = values_a[matched_mask]
+    matched_values_b = values_b[b_sort_idx[search_idx[matched_mask]]]
+    matched_values = matched_values_a * matched_values_b
 
-    # アダマール積（要素ごとの積）を計算
-    common_values = common_values_a * common_values_b
+    return torch.sparse_coo_tensor(matched_indices, matched_values, adj.size()).coalesce()
 
-    # スパーステンソルとして返す
-    result = torch.sparse_coo_tensor(common_indices, common_values, adj.size())
-    result = result.coalesce()
-    return result
 
 
 def sparse_hadamard_delete_product(adj, similarity):
     """
-    スパーステンソルのアダマール積を計算。共通インデックスのみを効率的に扱う。
+    スパーステンソルのアダマール積。共通インデックスのみ計算し、それ以外は0埋め。
+    勾配が切れないよう注意。
     """
-    # スパーステンソルを圧縮
     adj = adj.coalesce()
     similarity = similarity.coalesce()
 
-
-    # 非ゼロ要素のインデックスと値を取得
     indices_a, values_a = adj.indices(), adj.values()
     indices_b, values_b = similarity.indices(), similarity.values()
 
-    adj_sim_matrix = torch.zeros(adj._nnz())
+    index_a = indices_a[0] * adj.size(1) + indices_a[1]
+    index_b = indices_b[0] * similarity.size(1) + indices_b[1]
 
-    # (行, 列) を結合してユニークなキーとして扱う
-    indices_a_flat = indices_a[0] * adj.size(1) + indices_a[1]
+    sorted_b, b_sort_idx = torch.sort(index_b)
+    search_idx = torch.searchsorted(sorted_b, index_a)
+    search_idx = torch.clamp(search_idx, max=sorted_b.size(0) - 1)
 
-    indices_b_flat = indices_b[0] * similarity.size(1) + indices_b[1]
+    matched_mask = sorted_b[search_idx] == index_a
+    matched_values = torch.zeros_like(values_a)
 
-    # 共通インデックスを特定
-    common_mask = torch.isin(indices_a_flat, indices_b_flat)
+    # マッチした位置だけ積を計算
+    matched_indices = matched_mask.nonzero(as_tuple=True)[0]
+    matched_values_b = values_b[b_sort_idx[search_idx[matched_mask]]]
+    matched_values[matched_indices] = values_a[matched_indices] * matched_values_b
 
-    # 共通インデックスに対応する値を取得
-    common_indices = indices_a[:, common_mask]
-    #common_indices = indices_a[:, common_mask]
-    common_values_a = values_a[common_mask]
+    # スパーステンソル再構成（すべてのindices_aを使う）
+    return torch.sparse_coo_tensor(indices_a, matched_values, adj.size()).coalesce()
 
-    # `indices_a_flat` と `indices_b_flat` の対応を見つけて、`values_b` を合わせる
-
-    matched_b_indices = torch.searchsorted(indices_b_flat, indices_a_flat[common_mask])
-    common_values_b = values_b[matched_b_indices]
-
-    # アダマール積（要素ごとの積）を計算
-    common_values = common_values_a * common_values_b
-
-    # common_mask が False のインデックスを 0 にする
-    zero_indices = indices_a[:, ~common_mask]
-    zero_values = torch.zeros(zero_indices.shape[1], dtype=adj.dtype, device=adj.device)
-
-    # すべてのインデックスを統合
-    final_indices = torch.cat([common_indices, zero_indices], dim=1)
-    final_values = torch.cat([common_values, zero_values])
-
-    # スパーステンソルとして返す
-    result = torch.sparse_coo_tensor(final_indices, final_values, adj.shape)
-
-
-
-
-    return result
-  
 
 
 def adj_sim(adj, feat):
@@ -378,10 +371,10 @@ class Actor(nn.Module):
 
         for i in range(len(self.persona[0][0])):
       
-            attributes = attributes.coalesce().clone().detach()
-            edges = edges.coalesce().clone().detach()
+            attributes = attributes.coalesce()
+            edges = edges.coalesce()
 
-            two_hop_neighbar = two_hop_neighbar.coalesce().clone().detach()
+            two_hop_neighbar = two_hop_neighbar.coalesce()
             
 
             # 属性値更新 - sparse.mmの結果に対して直接演算を行う
@@ -456,10 +449,11 @@ class Actor(nn.Module):
             #print("one_hop_similality",one_hop_similality._nnz())
             dissim = torch.sparse_coo_tensor(
                 one_hop_similality.indices(), dissim_values, one_hop_similality.size()
-            )
+            ).coalesce()
        
             #delete_edge = self._disconect_prob(dissim, feat_sigmoid_action, self.x[i])
             delete_edge = self._disconect_prob( feat_sigmoid_action, dissim,self.x[i],self.s[i])
+             # Min-Max スケーリング
 
             delete_edge_prob = torch.tanh(delete_edge.values())
             #print("one_hop_similality",one_hop_similality)
@@ -512,6 +506,7 @@ class Actor(nn.Module):
 
                 persona_weighted = self.persona[times][:, i] * exit_edge_prob
                 edges_prob = self._combine_sparse_tensors(edges_prob, persona_weighted)
+
 
             # 属性確率の結合
             if i == 0:
